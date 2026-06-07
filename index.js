@@ -796,9 +796,6 @@ app.get('/api/partner/:viewUid', async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
     console.log(`\n🚀 Server berjalan di port ${PORT}`);
-    server.timeout = 120000;           // 2 menit timeout untuk seluruh response
-    server.keepAliveTimeout = 65000;   // Keep-alive timeout (harus > 60 detik)
-    server.headersTimeout = 66000;
     console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     console.log(`📡 MAKANAN ENDPOINTS:`);
     console.log(`  GET /api/makanan/stores-stream?lat=...&lng=...`);
