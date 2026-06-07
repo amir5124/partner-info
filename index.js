@@ -61,14 +61,49 @@ function parseUserCoords(query) {
 
 function setupSSE(res) {
     res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Cache-Control');
+
+    // Penting: disable compression untuk SSE
+    res.setHeader('Content-Encoding', 'identity');
+
     res.flushHeaders();
 
+    let heartbeatInterval = null;
+
+    // Kirim heartbeat setiap 15 detik
+    heartbeatInterval = setInterval(() => {
+        if (!res.writableEnded && !res.finished) {
+            try {
+                res.write(`: heartbeat ${Date.now()}\n\n`);
+                if (typeof res.flush === 'function') res.flush();
+            } catch (err) {
+                console.log('Heartbeat write failed:', err.message);
+                clearInterval(heartbeatInterval);
+            }
+        } else {
+            clearInterval(heartbeatInterval);
+        }
+    }, 15000);
+
+    // Cleanup heartbeat saat koneksi ditutup
+    req.on('close', () => {
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        if (!res.writableEnded) res.end();
+    });
+
     return (event, data) => {
-        res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-        if (typeof res.flush === 'function') res.flush();
+        if (res.writableEnded || res.finished) return;
+
+        try {
+            res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+            if (typeof res.flush === 'function') res.flush();
+        } catch (err) {
+            console.error(`Failed to send SSE event ${event}:`, err.message);
+        }
     };
 }
 
@@ -249,14 +284,77 @@ function formatProductWithCommission(product, storeDetail, userCoords, partnerIn
 // SSE: /api/makanan/stores-stream
 // ─────────────────────────────────────────────────────────────
 app.get('/api/makanan/stores-stream', async (req, res) => {
-    const send = setupSSE(res);
-    req.on('close', () => res.end());
+    let isClosed = false;
+    let heartbeatInterval = null;
+
+    // Setup SSE dengan heartbeat
+    const send = (event, data) => {
+        if (isClosed || res.writableEnded || res.finished) return;
+        try {
+            res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+            if (typeof res.flush === 'function') res.flush();
+        } catch (err) {
+            console.error(`SSE write error (${event}):`, err.message);
+            isClosed = true;
+        }
+    };
+
+    // Setup headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.flushHeaders();
+
+    // Heartbeat setiap 15 detik
+    heartbeatInterval = setInterval(() => {
+        if (!isClosed && !res.writableEnded && !res.finished) {
+            try {
+                res.write(`: heartbeat ${Date.now()}\n\n`);
+                if (typeof res.flush === 'function') res.flush();
+            } catch (err) {
+                console.log('Heartbeat failed, cleaning up');
+                clearInterval(heartbeatInterval);
+                isClosed = true;
+                if (!res.writableEnded) res.end();
+            }
+        } else {
+            clearInterval(heartbeatInterval);
+        }
+    }, 15000);
+
+    // Handle client disconnect
+    req.on('close', () => {
+        console.log('Client disconnected from stores-stream');
+        isClosed = true;
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        if (!res.writableEnded) res.end();
+    });
+
+    // Handle timeout
+    req.setTimeout(120000, () => {
+        console.log('Request timeout, closing SSE');
+        isClosed = true;
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        if (!res.writableEnded) res.end();
+    });
 
     try {
         const userCoords = parseUserCoords(req.query);
         console.log(`📡 [makanan/stores-stream] lat=${userCoords.lat}, lng=${userCoords.lng}`);
 
+        // Send initial meta
+        send('meta', { status: 'starting', userCoords });
+
+        // Gunakan AbortController untuk membatalkan request jika koneksi terputus
+        const abortController = new AbortController();
+        req.on('close', () => abortController.abort());
+
         const stores = await fetchAllStoresFromComponent(MAKANAN_COMPONENT_UID);
+
+        if (isClosed) return;
+
         const batches = chunk(stores, BATCH_SIZE);
 
         send('meta', {
@@ -269,9 +367,16 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
 
         let processedCount = 0;
 
+        // Proses batch dengan timeout per batch
         for (let bi = 0; bi < batches.length; bi++) {
+            if (isClosed) break;
+
             const batch = batches[bi];
-            const results = await Promise.all(batch.map(async (store) => {
+
+            // Promise dengan timeout untuk setiap batch
+            const batchPromise = Promise.all(batch.map(async (store) => {
+                if (isClosed) return null;
+
                 try {
                     const detail = await fetchStoreDetail(store.view_uid);
                     const distance = (detail.origin_lat && detail.origin_lng)
@@ -303,8 +408,20 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
                 }
             }));
 
-            const successItems = results.filter(r => r.ok).map(r => r.data);
-            const failedItems = results.filter(r => !r.ok);
+            // Timeout per batch (30 detik)
+            const timeoutPromise = new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Batch timeout')), 30000)
+            );
+
+            const results = await Promise.race([batchPromise, timeoutPromise]).catch(err => {
+                console.error(`Batch ${bi + 1} timeout:`, err.message);
+                return batch.map(() => ({ ok: false, error: 'Batch timeout' }));
+            });
+
+            if (isClosed) break;
+
+            const successItems = results.filter(r => r && r.ok).map(r => r.data);
+            const failedItems = results.filter(r => r && !r.ok);
 
             if (successItems.length > 0) {
                 send('batch_stores', {
@@ -315,7 +432,7 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
             }
 
             failedItems.forEach(f => {
-                send('error_store', { store_name: f.store_title, error: f.error });
+                if (f) send('error_store', { store_name: f.store_title, error: f.error });
             });
 
             processedCount += batch.length;
@@ -324,15 +441,25 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
                 total_stores: stores.length,
                 percent: Math.round((processedCount / stores.length) * 100)
             });
+
+            // Small delay between batches to prevent overwhelming
+            if (bi < batches.length - 1 && !isClosed) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
         }
 
-        send('done', { total_stores: stores.length, source: 'makanan' });
-        res.end();
+        if (!isClosed) {
+            send('done', { total_stores: stores.length, source: 'makanan' });
+        }
 
     } catch (err) {
         console.error('❌ [makanan/stores-stream]', err.message);
-        send('error', { message: err.message });
-        res.end();
+        if (!isClosed) {
+            send('error', { message: err.message });
+        }
+    } finally {
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        if (!res.writableEnded) res.end();
     }
 });
 
@@ -669,6 +796,9 @@ app.get('/api/partner/:viewUid', async (req, res) => {
 // ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
     console.log(`\n🚀 Server berjalan di port ${PORT}`);
+    server.timeout = 120000;           // 2 menit timeout untuk seluruh response
+    server.keepAliveTimeout = 65000;   // Keep-alive timeout (harus > 60 detik)
+    server.headersTimeout = 66000;
     console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     console.log(`📡 MAKANAN ENDPOINTS:`);
     console.log(`  GET /api/makanan/stores-stream?lat=...&lng=...`);
