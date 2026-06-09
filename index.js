@@ -307,6 +307,12 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.flushHeaders();
 
+    res.on('error', (err) => {
+        console.log(`💥 SSE Response error: ${err.message}`);
+        isClosed = true;
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+    });
+
     // Heartbeat setiap 15 detik
     heartbeatInterval = setInterval(() => {
         if (!isClosed && !res.writableEnded && !res.finished) {
