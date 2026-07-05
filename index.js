@@ -961,7 +961,34 @@ app.get('/api/petani/produk/:mitraUid', async (req, res) => {
 
         console.log(`🌾 [petani/produk] mitra=${mitraUid}, page=${page}, search_list="${searchList}"`);
 
-        const childrenData = await fetchListChildrenPage(mitraUid, page, searchList);
+        let childrenData;
+        let actualUid = mitraUid;
+
+        try {
+            // Coba langsung dengan UID yang diberikan
+            childrenData = await fetchListChildrenPage(mitraUid, page, searchList);
+        } catch (err) {
+            console.log(`⚠️ fetchListChildrenPage gagal untuk ${mitraUid}, mencoba mencari ulang...`);
+
+            // Ambil ulang semua data mitra dari komponen
+            const componentData = await fetchComponentPage(PETANI_COMPONENT_UID, 1, 100);
+            const allMitra = componentData.lists?.data || [];
+
+            // Cari mitra dengan view_uid atau partner_view_uid yang cocok
+            const foundMitra = allMitra.find(m =>
+                m.view_uid === mitraUid ||
+                m.partner_view_uid === mitraUid
+            );
+
+            if (foundMitra) {
+                actualUid = foundMitra.view_uid;
+                console.log(`🔄 Ditemukan mitra: ${foundMitra.title} dengan view_uid: ${actualUid}`);
+                childrenData = await fetchListChildrenPage(actualUid, page, searchList);
+            } else {
+                throw new Error(`Mitra dengan UID ${mitraUid} tidak ditemukan di komponen Petani Lokal`);
+            }
+        }
+
         const rawProducts = (childrenData.data || []).filter(i => i.type === 0 || i.purchasable === 1);
 
         const produk = rawProducts.map(p => ({
@@ -979,7 +1006,7 @@ app.get('/api/petani/produk/:mitraUid', async (req, res) => {
 
         res.json({
             success: true,
-            mitra_view_uid: mitraUid,
+            mitra_view_uid: actualUid,
             data: produk,
             pagination: {
                 current_page: childrenData.current_page || page,
@@ -988,12 +1015,12 @@ app.get('/api/petani/produk/:mitraUid', async (req, res) => {
                 total: childrenData.total || produk.length,
             }
         });
+
     } catch (err) {
         console.error('❌ [petani/produk]', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
-
 // ─────────────────────────────────────────────────────────────
 // START SERVER
 // ─────────────────────────────────────────────────────────────
