@@ -140,6 +140,35 @@ async function getPartnerDetailByViewUid(viewUid) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 🔥 FUNGSI GET PARTNER REPORT (FILTER KATEGORI USAHA)
+// ─────────────────────────────────────────────────────────────
+async function fetchPartnerReport({ unique_id, paginate = 10, partner_status, page }) {
+    const url = 'https://app.jagel.id/api/partner/report';
+
+    const params = { unique_id, paginate };
+    if (partner_status !== undefined) params.partner_status = partner_status;
+    if (page !== undefined) params.page = page;
+
+    console.log('🌐 Fetch partner report:', url, params);
+
+    const response = await axios.get(url, { headers: jagelHeaders, params });
+
+    if (!response.data || !response.data.success) {
+        throw new Error('Partner report API error');
+    }
+
+    return response.data.data;
+}
+
+function filterPartnersByKategoriUsaha(partners, kategoriUsaha) {
+    if (!Array.isArray(partners)) return [];
+    return partners.filter(p => {
+        const kategori = p?.formSubmit?.data?.kategoriusaha;
+        return kategori === kategoriUsaha;
+    });
+}
+
+// ─────────────────────────────────────────────────────────────
 // FUNGSI FETCH DARI JAGEL
 // ─────────────────────────────────────────────────────────────
 
@@ -798,6 +827,62 @@ app.get('/api/partner/:viewUid', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// 🌾 ENDPOINT BARU: GET /api/partner/report/pertanian
+// Mengambil laporan mitra dari Jagel lalu filter kategoriusaha = "PRODUK PERTANIAN"
+// Query params:
+//   - unique_id (wajib)
+//   - paginate (opsional, default 10)
+//   - partner_status (opsional, contoh: 2)
+//   - page (opsional)
+// ─────────────────────────────────────────────────────────────
+app.get('/api/partner/report/pertanian', async (req, res) => {
+    const { unique_id, paginate, partner_status, page } = req.query;
+
+    console.log('🌾 [PARTNER REPORT - PERTANIAN] Request received:');
+    console.log('   unique_id:', unique_id);
+    console.log('   paginate:', paginate);
+    console.log('   partner_status:', partner_status);
+    console.log('   page:', page);
+
+    if (!unique_id) {
+        return res.status(400).json({ success: false, error: "unique_id is required" });
+    }
+
+    try {
+        const reportData = await fetchPartnerReport({
+            unique_id,
+            paginate: paginate || 10,
+            partner_status,
+            page
+        });
+
+        const allPartners = reportData?.partners?.data || [];
+        const filteredPartners = filterPartnersByKategoriUsaha(allPartners, 'PRODUK PERTANIAN');
+
+        console.log(`✅ Total partners: ${allPartners.length}, Pertanian: ${filteredPartners.length}`);
+
+        res.json({
+            success: true,
+            data: {
+                app: reportData?.app || null,
+                partners: {
+                    current_page: reportData?.partners?.current_page || 1,
+                    last_page: reportData?.partners?.last_page || 1,
+                    per_page: reportData?.partners?.per_page || paginate || 10,
+                    total: filteredPartners.length,
+                    total_unfiltered: allPartners.length,
+                    data: filteredPartners
+                }
+            }
+        });
+
+    } catch (err) {
+        console.error('❌ [PARTNER REPORT - PERTANIAN] Error:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────
 // START SERVER
 // ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
@@ -810,5 +895,7 @@ app.listen(PORT, () => {
     console.log(`  GET /api/makanan/products/:storeUid?lat=...&lng=...&view_uid=...`);
     console.log(`\n🤝 PARTNER ENDPOINTS:`);
     console.log(`  GET /api/partner/:viewUid`);
+    console.log(`  GET /api/partner/match?unique_id=...&phone=...`);
+    console.log(`  GET /api/partner/report/pertanian?unique_id=...&paginate=10&partner_status=2&page=1`);
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 });
