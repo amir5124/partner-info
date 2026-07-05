@@ -18,6 +18,7 @@ const BATCH_SIZE = 3;
 
 // Component UI
 const MAKANAN_COMPONENT_UID = '618637dbc8415';    // Jastip Makanan
+const PETANI_COMPONENT_UID = '6a48d1e936ae2';     // Petani Lokal
 
 // Default koordinat
 const defaultCoords = { lat: -0.975, lng: 116.786 };
@@ -192,6 +193,24 @@ async function fetchStoreDetail(viewUid) {
     const { data } = await axios.get(url, { headers: jagelHeaders });
     if (!data.success) throw new Error(`Detail API error for ${viewUid}`);
     return data.data;
+}
+
+// ── Ambil 1 halaman dari komponen (mis. daftar mitra Petani Lokal) ──
+async function fetchComponentPage(componentUid, page = 1, perPage = 24) {
+    const url = `https://app.jagel.id/api/v2/customer/component/${componentUid}`
+        + `?codename=${CODENAME}&page=${page}&app_mode=1&per_page=${perPage}`;
+    const { data } = await axios.get(url, { headers: jagelHeaders });
+    if (!data.success) throw new Error(`Component API error (uid=${componentUid})`);
+    return data.data; // { view_uid, name, lists: { current_page, data, last_page, ... }, ... }
+}
+
+// ── Ambil 1 halaman children dari sebuah list (mis. produk milik satu mitra) ──
+async function fetchListChildrenPage(parentUid, page = 1, searchList = '') {
+    const url = `https://app.jagel.id/api/v2/customer/list/${parentUid}/children`
+        + `?codename=${CODENAME}&page=${page}&search_list=${encodeURIComponent(searchList || '')}`;
+    const { data } = await axios.get(url, { headers: jagelHeaders });
+    if (!data.success) throw new Error(`Children API error (uid=${parentUid})`);
+    return data.data; // { current_page, data, last_page, per_page, total, ... }
 }
 
 async function fetchChildren(parentUid, page = 1, perPage = 100) {
@@ -883,6 +902,99 @@ app.get('/api/partner/report/pertanian', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// 🌾 ENDPOINT: GET /api/petani/mitra
+// Daftar mitra petani lokal (dari komponen "Petani Lokal")
+// Query params: page (default 1), per_page (default 24)
+// ─────────────────────────────────────────────────────────────
+app.get('/api/petani/mitra', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const perPage = parseInt(req.query.per_page) || 24;
+
+        console.log(`🌾 [petani/mitra] page=${page}, per_page=${perPage}`);
+
+        const componentData = await fetchComponentPage(PETANI_COMPONENT_UID, page, perPage);
+        const lists = componentData.lists || {};
+        const rawItems = lists.data || [];
+
+        const mitra = rawItems.map(item => ({
+            view_uid: item.view_uid,
+            title: (item.title || '').trim(),
+            image: item.image || null,
+            content: item.content || '',
+            is_open: item.is_open === 1,
+            close_status: item.close_status || '',
+            partner_view_uid: item.partner_view_uid || null,
+            partner_name: item.partner_name || null,
+        }));
+
+        res.json({
+            success: true,
+            component: {
+                view_uid: componentData.view_uid,
+                name: componentData.name,
+            },
+            data: mitra,
+            pagination: {
+                current_page: lists.current_page || page,
+                last_page: lists.last_page || 1,
+                per_page: lists.per_page || perPage,
+                total: lists.total || mitra.length,
+            }
+        });
+    } catch (err) {
+        console.error('❌ [petani/mitra]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────
+// 🌾 ENDPOINT: GET /api/petani/produk/:mitraUid
+// Daftar produk milik satu mitra petani
+// Query params: page (default 1), search_list (opsional)
+// ─────────────────────────────────────────────────────────────
+app.get('/api/petani/produk/:mitraUid', async (req, res) => {
+    try {
+        const { mitraUid } = req.params;
+        const page = parseInt(req.query.page) || 1;
+        const searchList = req.query.search_list || '';
+
+        console.log(`🌾 [petani/produk] mitra=${mitraUid}, page=${page}, search_list="${searchList}"`);
+
+        const childrenData = await fetchListChildrenPage(mitraUid, page, searchList);
+        const rawProducts = (childrenData.data || []).filter(i => i.type === 0 || i.purchasable === 1);
+
+        const produk = rawProducts.map(p => ({
+            view_uid: p.view_uid,
+            title: (p.title || '').trim(),
+            image: p.image || null,
+            price: p.price || 0,
+            currency: p.currency || 'Rp',
+            content: p.content || '',
+            is_open: p.is_open === 1,
+            close_status: p.close_status || '',
+            max_qty: p.max_qty || null,
+            partner_view_uid: p.partner_view_uid || null,
+        }));
+
+        res.json({
+            success: true,
+            mitra_view_uid: mitraUid,
+            data: produk,
+            pagination: {
+                current_page: childrenData.current_page || page,
+                last_page: childrenData.last_page || 1,
+                per_page: childrenData.per_page || produk.length,
+                total: childrenData.total || produk.length,
+            }
+        });
+    } catch (err) {
+        console.error('❌ [petani/produk]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────
 // START SERVER
 // ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
@@ -897,5 +1009,8 @@ app.listen(PORT, () => {
     console.log(`  GET /api/partner/:viewUid`);
     console.log(`  GET /api/partner/match?unique_id=...&phone=...`);
     console.log(`  GET /api/partner/report/pertanian?unique_id=...&paginate=10&partner_status=2&page=1`);
+    console.log(`\n🌾 PETANI LOKAL ENDPOINTS:`);
+    console.log(`  GET /api/petani/mitra?page=1&per_page=24`);
+    console.log(`  GET /api/petani/produk/:mitraUid?page=1&search_list=`);
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 });
