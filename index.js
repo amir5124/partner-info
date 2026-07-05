@@ -145,13 +145,13 @@ async function getPartnerDetailByViewUid(viewUid) {
 async function fetchPartnerReport({ unique_id, paginate = 10, partner_status, page }) {
     const url = 'https://app.jagel.id/api/partner/report';
 
-    const params = { unique_id, paginate };
-    if (partner_status !== undefined) params.partner_status = partner_status;
-    if (page !== undefined) params.page = page;
+    const payload = { unique_id, paginate };
+    if (partner_status !== undefined) payload.partner_status = partner_status;
+    if (page !== undefined) payload.page = page;
 
-    console.log('🌐 Fetch partner report:', url, params);
+    console.log('🌐 Fetch partner report (POST):', url, payload);
 
-    const response = await axios.get(url, { headers: jagelHeaders, params });
+    const response = await axios.post(url, payload, { headers: jagelHeaders });
 
     if (!response.data || !response.data.success) {
         throw new Error('Partner report API error');
