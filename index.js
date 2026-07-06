@@ -878,7 +878,31 @@ app.get('/api/partner/report/pertanian', async (req, res) => {
         const allPartners = reportData?.partners?.data || [];
         const filteredPartners = filterPartnersByKategoriUsaha(allPartners, 'PRODUK PERTANIAN');
 
-        console.log(`✅ Total partners: ${allPartners.length}, Pertanian: ${filteredPartners.length}`);
+        // 🔥 TAMBAHKAN lokasiusaha ke setiap partner
+        const partnersWithLocation = filteredPartners.map(partner => {
+            const locationData = partner.formSubmit?.data?.lokasiusaha || '';
+            let location = null;
+
+            // Parse lokasiusaha: "alamat;lat;lng"
+            if (locationData && locationData.includes(';')) {
+                const parts = locationData.split(';');
+                if (parts.length >= 3) {
+                    location = {
+                        address: parts[0] || '',
+                        lat: parseFloat(parts[1]) || 0,
+                        lng: parseFloat(parts[2]) || 0
+                    };
+                }
+            }
+
+            return {
+                ...partner,
+                location: location,
+                location_raw: locationData || null
+            };
+        });
+
+        console.log(`✅ Total partners: ${allPartners.length}, Pertanian: ${partnersWithLocation.length}`);
 
         res.json({
             success: true,
@@ -888,9 +912,9 @@ app.get('/api/partner/report/pertanian', async (req, res) => {
                     current_page: reportData?.partners?.current_page || 1,
                     last_page: reportData?.partners?.last_page || 1,
                     per_page: reportData?.partners?.per_page || paginate || 10,
-                    total: filteredPartners.length,
+                    total: partnersWithLocation.length,
                     total_unfiltered: allPartners.length,
-                    data: filteredPartners
+                    data: partnersWithLocation
                 }
             }
         });
@@ -900,7 +924,6 @@ app.get('/api/partner/report/pertanian', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
-
 // ─────────────────────────────────────────────────────────────
 // 🌾 ENDPOINT: GET /api/petani/mitra
 // Daftar mitra petani lokal (dari komponen "Petani Lokal")
