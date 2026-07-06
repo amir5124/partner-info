@@ -19,6 +19,10 @@ const BATCH_SIZE = 3;
 // Component UI
 const MAKANAN_COMPONENT_UID = '618637dbc8415';    // Jastip Makanan
 const PETANI_COMPONENT_UID = '6a48d1e936ae2';     // Petani Lokal
+const JAGEL_BASE_URL = 'https://app.jagel.id/api/v2/customer';
+const JAGEL_CODENAME = 'iknlinku';
+
+
 
 // Default koordinat
 const defaultCoords = { lat: -0.975, lng: 116.786 };
@@ -106,6 +110,23 @@ function setupSSE(res) {
             console.error(`Failed to send SSE event ${event}:`, err.message);
         }
     };
+}
+
+async function jagelGet(path, params = {}) {
+    const url = new URL(`${JAGEL_BASE_URL}${path}`);
+    Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
+    });
+
+    const resp = await fetch(url.toString());
+    if (!resp.ok) {
+        throw new Error(`Jagel API error ${resp.status} - ${url.toString()}`);
+    }
+    const json = await resp.json();
+    if (!json.success) {
+        throw new Error(json.message || 'Jagel API returned success=false');
+    }
+    return json.data;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -924,6 +945,8 @@ app.get('/api/partner/report/pertanian', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
+
+
 // ─────────────────────────────────────────────────────────────
 // 🌾 ENDPOINT: GET /api/petani/mitra
 // Daftar mitra petani lokal (dari komponen "Petani Lokal")
@@ -936,7 +959,13 @@ app.get('/api/petani/mitra', async (req, res) => {
 
         console.log(`🌾 [petani/mitra] page=${page}, per_page=${perPage}`);
 
-        const componentData = await fetchComponentPage(PETANI_COMPONENT_UID, page, perPage);
+        const componentData = await jagelGet(`/component/${PETANI_COMPONENT_UID}`, {
+            codename: JAGEL_CODENAME,
+            page,
+            app_mode: 1,
+            per_page: perPage,
+        });
+
         const lists = componentData.lists || {};
         const rawItems = lists.data || [];
 
@@ -949,6 +978,8 @@ app.get('/api/petani/mitra', async (req, res) => {
             close_status: item.close_status || '',
             partner_view_uid: item.partner_view_uid || null,
             partner_name: item.partner_name || null,
+            link_view: item.link_view || null,
+            distance: item.distance ?? null,
         }));
 
         res.json({
@@ -989,12 +1020,21 @@ app.get('/api/petani/produk/:mitraUid', async (req, res) => {
 
         try {
             // Coba langsung dengan UID yang diberikan
-            childrenData = await fetchListChildrenPage(mitraUid, page, searchList);
+            childrenData = await jagelGet(`/list/${mitraUid}/children`, {
+                codename: JAGEL_CODENAME,
+                page,
+                search_list: searchList,
+            });
         } catch (err) {
-            console.log(`⚠️ fetchListChildrenPage gagal untuk ${mitraUid}, mencoba mencari ulang...`);
+            console.log(`⚠️ fetch children gagal untuk ${mitraUid}, mencoba mencari ulang...`);
 
             // Ambil ulang semua data mitra dari komponen
-            const componentData = await fetchComponentPage(PETANI_COMPONENT_UID, 1, 100);
+            const componentData = await jagelGet(`/component/${PETANI_COMPONENT_UID}`, {
+                codename: JAGEL_CODENAME,
+                page: 1,
+                app_mode: 1,
+                per_page: 100,
+            });
             const allMitra = componentData.lists?.data || [];
 
             // Cari mitra dengan view_uid atau partner_view_uid yang cocok
@@ -1006,7 +1046,11 @@ app.get('/api/petani/produk/:mitraUid', async (req, res) => {
             if (foundMitra) {
                 actualUid = foundMitra.view_uid;
                 console.log(`🔄 Ditemukan mitra: ${foundMitra.title} dengan view_uid: ${actualUid}`);
-                childrenData = await fetchListChildrenPage(actualUid, page, searchList);
+                childrenData = await jagelGet(`/list/${actualUid}/children`, {
+                    codename: JAGEL_CODENAME,
+                    page,
+                    search_list: searchList,
+                });
             } else {
                 throw new Error(`Mitra dengan UID ${mitraUid} tidak ditemukan di komponen Petani Lokal`);
             }
