@@ -16,6 +16,8 @@ const JAGEL_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6ImZmM2I0Njk4YWZ
 const CODENAME = "iknlinku";
 const JAGEL_CODENAME = 'iknlinku'; // alias, dipakai fungsi jagelGet
 const BATCH_SIZE = 3;
+const DEFAULT_UNIQUE_ID = '03421121304617f701ba3b374.23310242';
+const DEFAULT_PARTNER_STATUS = '2';
 
 // Component UID
 const MAKANAN_COMPONENT_UID = '618637dbc8415';    // Jastip Makanan
@@ -918,11 +920,85 @@ app.get('/api/partner/report/pertanian', async (req, res) => {
     }
 });
 
+
+function extractDesaFromLocationRaw(locationRaw) {
+    if (!locationRaw) return null;
+    const parts = locationRaw.split(';');
+    if (parts.length < 1) return null;
+
+    const address = parts[0];
+    const addressParts = address.split(',').map(s => s.trim());
+
+    for (let i = 0; i < addressParts.length; i++) {
+        const part = addressParts[i].trim();
+        if (part.includes('+') || part.includes('Kec.') || part.includes('Kab.') ||
+            part.includes('Prov.') || part.includes('Indonesia') ||
+            /^\d{5}$/.test(part) ||
+            part.includes('Kecamatan') || part.includes('Kabupaten')) {
+            continue;
+        }
+        if (part.length > 1 && !part.includes('RT') && !part.includes('RW')) {
+            return part;
+        }
+    }
+
+    const match = address.match(/^[^,]+,?\s*([^,]+)/);
+    if (match && match[1]) {
+        const potentialDesa = match[1].trim();
+        if (potentialDesa.length > 1 && !potentialDesa.includes('+')) {
+            return potentialDesa;
+        }
+    }
+    return null;
+}
+
+async function getPertanianEnrichmentMap() {
+    try {
+        const reportData = await fetchPartnerReport({
+            unique_id: DEFAULT_UNIQUE_ID,
+            paginate: 100,
+            partner_status: DEFAULT_PARTNER_STATUS,
+            page: 1,
+        });
+
+        const allPartners = reportData?.partners?.data || [];
+        const filtered = filterPartnersByKategoriUsaha(allPartners, 'PRODUK PERTANIAN');
+
+        const mapByPartnerViewUid = {};
+        const mapByViewUid = {};
+
+        filtered.forEach(partner => {
+            const form = partner.formSubmit?.data || {};
+            const locationRaw = form.lokasiusaha || '';
+            const desa = extractDesaFromLocationRaw(locationRaw) || form.kelurahan || '';
+
+            const enriched = {
+                businessName: form.namausaha || null,
+                ownerFirstName: (form.namapemilik || '').trim().split(/\s+/)[0] || '',
+                kecamatan: form.kecamatan || '',
+                kabupaten: form.kabupaten || '',
+                provinsi: form.provinsi || '',
+                desa,
+                location_raw: locationRaw || null,
+                joinedDate: partner.partner_date_accept || partner.partner_date || null,
+            };
+
+            if (partner.view_uid) mapByPartnerViewUid[partner.view_uid] = enriched;
+            if (partner.view_uid) mapByViewUid[partner.view_uid] = enriched;
+        });
+
+        return { mapByPartnerViewUid, mapByViewUid };
+    } catch (err) {
+        console.log('⚠️ Gagal ambil data enrichment pertanian:', err.message);
+        return { mapByPartnerViewUid: {}, mapByViewUid: {} };
+    }
+}
+
 // ─────────────────────────────────────────────────────────────
-// 🌾 ENDPOINT: GET /api/petani/mitra
-// Daftar mitra petani lokal — LANGSUNG dari endpoint jagel component
-// (bukan dari partner/report lagi), sehingga view_uid yang dikembalikan
-// sudah pasti valid untuk dipakai fetch produk (/list/{uid}/children).
+// 🌾 ENDPOINT: GET /api/petani/mitra (VERSI ENRICHED)
+// Daftar mitra petani lokal dari endpoint jagel component,
+// digabung dengan data lokasi/pengelola/tanggal gabung dari
+// /partner/report agar view_uid tetap valid untuk fetch produk.
 // Query params: page (default 1), per_page (default 24)
 // ─────────────────────────────────────────────────────────────
 app.get('/api/petani/mitra', async (req, res) => {
@@ -932,28 +1008,46 @@ app.get('/api/petani/mitra', async (req, res) => {
 
         console.log(`🌾 [petani/mitra] page=${page}, per_page=${perPage}`);
 
-        const componentData = await jagelGet(`/component/${PETANI_COMPONENT_UID}`, {
-            codename: JAGEL_CODENAME,
-            page,
-            app_mode: 1,
-            per_page: perPage,
-        });
+        const [componentData, enrichment] = await Promise.all([
+            jagelGet(`/component/${PETANI_COMPONENT_UID}`, {
+                codename: JAGEL_CODENAME,
+                page,
+                app_mode: 1,
+                per_page: perPage,
+            }),
+            getPertanianEnrichmentMap(),
+        ]);
 
         const lists = componentData.lists || {};
         const rawItems = lists.data || [];
 
-        const mitra = rawItems.map(item => ({
-            view_uid: item.view_uid,          // ← dipakai langsung untuk fetch produk, TIDAK butuh fallback lagi
-            title: (item.title || '').trim(),
-            image: item.image || null,
-            content: item.content || '',
-            is_open: item.is_open === 1,
-            close_status: item.close_status || '',
-            partner_view_uid: item.partner_view_uid || null,
-            partner_name: item.partner_name || null,
-            link_view: item.link_view || null,
-            distance: item.distance ?? null,
-        }));
+        const mitra = rawItems.map(item => {
+            const enrich =
+                enrichment.mapByPartnerViewUid[item.partner_view_uid] ||
+                enrichment.mapByViewUid[item.view_uid] ||
+                {};
+
+            return {
+                view_uid: item.view_uid,           // ← tetap valid untuk fetch produk
+                title: (item.title || '').trim(),
+                image: item.image || null,
+                content: item.content || '',
+                is_open: item.is_open === 1,
+                close_status: item.close_status || '',
+                partner_view_uid: item.partner_view_uid || null,
+                partner_name: item.partner_name || null,
+                link_view: item.link_view || null,
+                distance: item.distance ?? null,
+                // ── data hasil enrichment (bisa null jika tidak ketemu) ──
+                ownerFirstName: enrich.ownerFirstName || '',
+                kecamatan: enrich.kecamatan || '',
+                kabupaten: enrich.kabupaten || '',
+                provinsi: enrich.provinsi || '',
+                desa: enrich.desa || '',
+                location_raw: enrich.location_raw || null,
+                joinedDate: enrich.joinedDate || null,
+            };
+        });
 
         res.json({
             success: true,
