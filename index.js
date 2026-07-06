@@ -14,20 +14,18 @@ app.use(express.static('public'));
 // ─────────────────────────────────────────────────────────────
 const JAGEL_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6ImZmM2I0Njk4YWZiZDc0NmY4NDc5NmJkMjUyMGFjY2JlY2I2Mjg2ZWY4MDEwYzI0MTI5NDJiZjZiZTZhMmUwM2FhYzgyNzEwYTZiOTdlZDUxIn0.eyJhdWQiOiIxIiwianRpIjoiZmYzYjQ2OThhZmJkNzQ2Zjg0Nzk2YmQyNTIwYWNjYmVjYjYyODZlZjgwMTBjMjQxMjk0MmJmNmJlNmEyZTAzYWFjODI3MTBhNmI5N2VkNTEiLCJpYXQiOjE3ODI3MzI3OTEsIm5iZiI6MTc4MjczMjc5MSwiZXhwIjoxODE0MjY4NzkxLCJzdWIiOiIyOTcxODQ0Iiwic2NvcGVzIjpbXX0.C_jRz3EjjNjn9oJ-Ka1ksFXfGvgVZOlav4flxr2afeGY_CnR0Hn3RrC2tan1ofRynFqj__jolJ5aGHxt3VI5y3occNTDPjmVydVW0h2yDRUxv_q9FY3QsHPs9MsntJf3e8U0uquPLeMTN1bQrJrSz-kslmMGb4BllB8oQz3462K3dn4zrtW8tndIL1kJoPd_yEnIcUSxM9mMubdwbPFtrlhnHuBK91XRdVIt61NC4GN5Vl2sxfexaX4dfr02vRGswFnEA05DvAct1WOZcJ0YQt30gF_htyqDtH_5eGOBZfF00ZcG1QRKnbzfj-syPoC3_upipBKNd9VoswUHSAMQwgFlX-06PuxiQSFJJs2pUxDI00fTY73SKrINX_tO5qutEx5I2J5LxtwKMP0H5eMBLe6wcjDoUl32W8UBwR_bJAG96v2762ka37KHATrQ6ygsDubPDZVAtTdl_wB7mmwCQ8IR2_bL8vXzGplacc_x0hHZVeCGGCDRaeukUrl6Z_FRWmyT7Dl15rbPqiiJ6PUWtBsMuBBXQ7k4E1JGELBukNOlaaXbWNSJk_Qa7BstOEAwRmupt3KSlVYfQKnO2e7JDO78QHC9TPzsgEza25eu_q6ukbjiKanmDdRu-7MUOo95FRajAmRyOr3fIJ6-2zqEHTMNRlq7qEUyJMvTJXnQan4";
 const CODENAME = "iknlinku";
+const JAGEL_CODENAME = 'iknlinku'; // alias, dipakai fungsi jagelGet
 const BATCH_SIZE = 3;
 
-// Component UI
+// Component UID
 const MAKANAN_COMPONENT_UID = '618637dbc8415';    // Jastip Makanan
 const PETANI_COMPONENT_UID = '6a48d1e936ae2';     // Petani Lokal
 const JAGEL_BASE_URL = 'https://app.jagel.id/api/v2/customer';
-const JAGEL_CODENAME = 'iknlinku';
-
-
 
 // Default koordinat
 const defaultCoords = { lat: -0.975, lng: 116.786 };
 
-// Headers untuk request ke Jagel
+// Headers untuk request ke Jagel (dipakai axios, endpoint yang butuh auth: report, users, partner)
 const jagelHeaders = {
     'User-Agent': 'Mozilla/5.0',
     'Authorization': `Bearer ${JAGEL_TOKEN}`,
@@ -64,23 +62,21 @@ function parseUserCoords(query) {
     return (!isNaN(lat) && !isNaN(lng)) ? { lat, lng } : defaultCoords;
 }
 
-function setupSSE(res) {
+// Catatan: fungsi ini tidak dipakai di endpoint manapun saat ini
+// (stores-stream punya implementasi SSE sendiri secara inline).
+// Signature diperbaiki agar req ikut di-pass, supaya tidak crash jika dipakai nanti.
+function setupSSE(req, res) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', 'Cache-Control');
-
-    // Penting: disable compression untuk SSE
     res.setHeader('Content-Encoding', 'identity');
 
     res.flushHeaders();
 
-    let heartbeatInterval = null;
-
-    // Kirim heartbeat setiap 15 detik
-    heartbeatInterval = setInterval(() => {
+    let heartbeatInterval = setInterval(() => {
         if (!res.writableEnded && !res.finished) {
             try {
                 res.write(`: heartbeat ${Date.now()}\n\n`);
@@ -94,7 +90,6 @@ function setupSSE(res) {
         }
     }, 15000);
 
-    // Cleanup heartbeat saat koneksi ditutup
     req.on('close', () => {
         if (heartbeatInterval) clearInterval(heartbeatInterval);
         if (!res.writableEnded) res.end();
@@ -102,7 +97,6 @@ function setupSSE(res) {
 
     return (event, data) => {
         if (res.writableEnded || res.finished) return;
-
         try {
             res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
             if (typeof res.flush === 'function') res.flush();
@@ -112,6 +106,7 @@ function setupSSE(res) {
     };
 }
 
+// Helper GET generik ke jagel.id (pakai fetch, tanpa auth header — untuk endpoint public v2/customer)
 async function jagelGet(path, params = {}) {
     const url = new URL(`${JAGEL_BASE_URL}${path}`);
     Object.entries(params).forEach(([k, v]) => {
@@ -136,7 +131,6 @@ async function getPartnerDetailByViewUid(viewUid) {
     if (!viewUid) return null;
 
     try {
-        // Coba endpoint /api/users/{view_uid}?driver=1
         const url = `https://app.jagel.id/api/users/${viewUid}?driver=1`;
         console.log('🌐 Fetch partner from users API:', url);
 
@@ -191,7 +185,7 @@ function filterPartnersByKategoriUsaha(partners, kategoriUsaha) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// FUNGSI FETCH DARI JAGEL
+// FUNGSI FETCH DARI JAGEL (untuk MAKANAN / stores)
 // ─────────────────────────────────────────────────────────────
 
 async function fetchAllStoresFromComponent(componentUid) {
@@ -356,7 +350,6 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
     let isClosed = false;
     let heartbeatInterval = null;
 
-    // Setup SSE dengan heartbeat
     const send = (event, data) => {
         if (isClosed || res.writableEnded || res.finished) return;
         try {
@@ -368,7 +361,6 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
         }
     };
 
-    // Setup headers
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
@@ -382,7 +374,6 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
         if (heartbeatInterval) clearInterval(heartbeatInterval);
     });
 
-    // Heartbeat setiap 15 detik
     heartbeatInterval = setInterval(() => {
         if (!isClosed && !res.writableEnded && !res.finished) {
             try {
@@ -399,7 +390,6 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
         }
     }, 15000);
 
-    // Handle client disconnect
     req.on('close', () => {
         console.log('Client disconnected from stores-stream');
         isClosed = true;
@@ -407,7 +397,6 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
         if (!res.writableEnded) res.end();
     });
 
-    // Handle timeout
     req.setTimeout(120000, () => {
         console.log('Request timeout, closing SSE');
         isClosed = true;
@@ -419,10 +408,8 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
         const userCoords = parseUserCoords(req.query);
         console.log(`📡 [makanan/stores-stream] lat=${userCoords.lat}, lng=${userCoords.lng}`);
 
-        // Send initial meta
         send('meta', { status: 'starting', userCoords });
 
-        // Gunakan AbortController untuk membatalkan request jika koneksi terputus
         const abortController = new AbortController();
         req.on('close', () => abortController.abort());
 
@@ -442,13 +429,11 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
 
         let processedCount = 0;
 
-        // Proses batch dengan timeout per batch
         for (let bi = 0; bi < batches.length; bi++) {
             if (isClosed) break;
 
             const batch = batches[bi];
 
-            // Promise dengan timeout untuk setiap batch
             const batchPromise = Promise.all(batch.map(async (store) => {
                 if (isClosed) return null;
 
@@ -483,7 +468,6 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
                 }
             }));
 
-            // Timeout per batch (30 detik)
             const timeoutPromise = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error('Batch timeout')), 30000)
             );
@@ -517,7 +501,6 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
                 percent: Math.round((processedCount / stores.length) * 100)
             });
 
-            // Small delay between batches to prevent overwhelming
             if (bi < batches.length - 1 && !isClosed) {
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
@@ -640,7 +623,6 @@ app.get('/api/makanan/products/:storeUid', async (req, res) => {
 
         let partnerInfo = null;
 
-        // 🔥 Match partner menggunakan partner_view_uid dari toko
         if (view_uid) {
             partnerInfo = await getPartnerDetailByViewUid(view_uid);
             if (partnerInfo) {
@@ -732,7 +714,6 @@ app.get('/api/partner/match', async (req, res) => {
     try {
         let partnerData = null;
 
-        // METHOD 1: Match by view_uid
         if (view_uid) {
             try {
                 const url = `https://app.jagel.id/api/users/${view_uid}?driver=1`;
@@ -747,7 +728,6 @@ app.get('/api/partner/match', async (req, res) => {
             }
         }
 
-        // METHOD 2: Match by phone
         if (!partnerData && phone) {
             try {
                 const url = `https://app.jagel.id/api/v2/partner?unique_id=${unique_id}&phone=${phone}`;
@@ -767,7 +747,6 @@ app.get('/api/partner/match', async (req, res) => {
             }
         }
 
-        // METHOD 3: Match by username
         if (!partnerData && username) {
             try {
                 const url = `https://app.jagel.id/api/v2/partner?unique_id=${unique_id}&username=${username}`;
@@ -787,7 +766,6 @@ app.get('/api/partner/match', async (req, res) => {
             }
         }
 
-        // METHOD 4: Match by name
         if (!partnerData && name) {
             try {
                 const url = `https://app.jagel.id/api/v2/partner?unique_id=${unique_id}&name=${name}`;
@@ -867,13 +845,9 @@ app.get('/api/partner/:viewUid', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// 🌾 ENDPOINT BARU: GET /api/partner/report/pertanian
-// Mengambil laporan mitra dari Jagel lalu filter kategoriusaha = "PRODUK PERTANIAN"
-// Query params:
-//   - unique_id (wajib)
-//   - paginate (opsional, default 10)
-//   - partner_status (opsional, contoh: 2)
-//   - page (opsional)
+// 🌾 ENDPOINT: GET /api/partner/report/pertanian
+// (dibiarkan tetap ada sesuai permintaan, tidak dipakai lagi oleh frontend Petani Lokal
+//  tapi masih tersedia jika dibutuhkan endpoint/fitur lain)
 // ─────────────────────────────────────────────────────────────
 app.get('/api/partner/report/pertanian', async (req, res) => {
     const { unique_id, paginate, partner_status, page } = req.query;
@@ -899,12 +873,10 @@ app.get('/api/partner/report/pertanian', async (req, res) => {
         const allPartners = reportData?.partners?.data || [];
         const filteredPartners = filterPartnersByKategoriUsaha(allPartners, 'PRODUK PERTANIAN');
 
-        // 🔥 TAMBAHKAN lokasiusaha ke setiap partner
         const partnersWithLocation = filteredPartners.map(partner => {
             const locationData = partner.formSubmit?.data?.lokasiusaha || '';
             let location = null;
 
-            // Parse lokasiusaha: "alamat;lat;lng"
             if (locationData && locationData.includes(';')) {
                 const parts = locationData.split(';');
                 if (parts.length >= 3) {
@@ -946,10 +918,11 @@ app.get('/api/partner/report/pertanian', async (req, res) => {
     }
 });
 
-
 // ─────────────────────────────────────────────────────────────
 // 🌾 ENDPOINT: GET /api/petani/mitra
-// Daftar mitra petani lokal (dari komponen "Petani Lokal")
+// Daftar mitra petani lokal — LANGSUNG dari endpoint jagel component
+// (bukan dari partner/report lagi), sehingga view_uid yang dikembalikan
+// sudah pasti valid untuk dipakai fetch produk (/list/{uid}/children).
 // Query params: page (default 1), per_page (default 24)
 // ─────────────────────────────────────────────────────────────
 app.get('/api/petani/mitra', async (req, res) => {
@@ -970,7 +943,7 @@ app.get('/api/petani/mitra', async (req, res) => {
         const rawItems = lists.data || [];
 
         const mitra = rawItems.map(item => ({
-            view_uid: item.view_uid,
+            view_uid: item.view_uid,          // ← dipakai langsung untuk fetch produk, TIDAK butuh fallback lagi
             title: (item.title || '').trim(),
             image: item.image || null,
             content: item.content || '',
@@ -1004,7 +977,11 @@ app.get('/api/petani/mitra', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────
 // 🌾 ENDPOINT: GET /api/petani/produk/:mitraUid
-// Daftar produk milik satu mitra petani
+// Daftar produk milik satu mitra petani — LANGSUNG ke jagel /list/{uid}/children.
+// Fallback pencarian ulang tetap dipertahankan sebagai jaring pengaman
+// (mis. kalau ada yang masih mengirim partner_view_uid lama),
+// tapi seharusnya tidak lagi terpakai jika frontend memakai view_uid
+// dari /api/petani/mitra.
 // Query params: page (default 1), search_list (opsional)
 // ─────────────────────────────────────────────────────────────
 app.get('/api/petani/produk/:mitraUid', async (req, res) => {
@@ -1019,7 +996,6 @@ app.get('/api/petani/produk/:mitraUid', async (req, res) => {
         let actualUid = mitraUid;
 
         try {
-            // Coba langsung dengan UID yang diberikan
             childrenData = await jagelGet(`/list/${mitraUid}/children`, {
                 codename: JAGEL_CODENAME,
                 page,
@@ -1028,7 +1004,6 @@ app.get('/api/petani/produk/:mitraUid', async (req, res) => {
         } catch (err) {
             console.log(`⚠️ fetch children gagal untuk ${mitraUid}, mencoba mencari ulang...`);
 
-            // Ambil ulang semua data mitra dari komponen
             const componentData = await jagelGet(`/component/${PETANI_COMPONENT_UID}`, {
                 codename: JAGEL_CODENAME,
                 page: 1,
@@ -1037,7 +1012,6 @@ app.get('/api/petani/produk/:mitraUid', async (req, res) => {
             });
             const allMitra = componentData.lists?.data || [];
 
-            // Cari mitra dengan view_uid atau partner_view_uid yang cocok
             const foundMitra = allMitra.find(m =>
                 m.view_uid === mitraUid ||
                 m.partner_view_uid === mitraUid
@@ -1088,6 +1062,7 @@ app.get('/api/petani/produk/:mitraUid', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
+
 // ─────────────────────────────────────────────────────────────
 // START SERVER
 // ─────────────────────────────────────────────────────────────
