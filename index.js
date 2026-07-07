@@ -1062,15 +1062,7 @@ app.get('/api/petani/mitra', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────
-// 🌾 ENDPOINT: GET /api/petani/produk/:mitraUid
-// Daftar produk milik satu mitra petani — LANGSUNG ke jagel /list/{uid}/children.
-// Fallback pencarian ulang tetap dipertahankan sebagai jaring pengaman
-// (mis. kalau ada yang masih mengirim partner_view_uid lama),
-// tapi seharusnya tidak lagi terpakai jika frontend memakai view_uid
-// dari /api/petani/mitra.
-// Query params: page (default 1), search_list (opsional)
-// ─────────────────────────────────────────────────────────────
+
 app.get('/api/petani/produk/:mitraUid', async (req, res) => {
     try {
         const { mitraUid } = req.params;
@@ -1367,13 +1359,7 @@ app.get('/api/panen-hari-ini/mitra', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────
-// 🥭 ENDPOINT: GET /api/panen-hari-ini/produk/:mitraUid
-// Daftar produk "Panen Hari Ini" milik satu mitra — langsung ke
-// jagel /list/{uid}/children, dengan fallback pencarian ulang
-// lewat komponen Panen Hari Ini.
-// Query params: page (default 1), search_list (opsional)
-// ─────────────────────────────────────────────────────────────
+
 app.get('/api/panen-hari-ini/produk/:mitraUid', async (req, res) => {
     try {
         const { mitraUid } = req.params;
@@ -1427,6 +1413,7 @@ app.get('/api/panen-hari-ini/produk/:mitraUid', async (req, res) => {
             title: (p.title || '').trim(),
             image: p.image || null,
             price: p.price || 0,
+            price_before_discount: p.price_before_discount || 0, // ← ditambahkan
             currency: p.currency || 'Rp',
             content: p.content || '',
             is_open: p.is_open === 1,
@@ -1453,11 +1440,6 @@ app.get('/api/panen-hari-ini/produk/:mitraUid', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────
-// 🌱 ENDPOINT: GET /api/jadwal-panen/mitra
-// Daftar mitra "Jadwal Panen", pola sama seperti di atas.
-// Query params: page (default 1), per_page (default 24)
-// ─────────────────────────────────────────────────────────────
 app.get('/api/jadwal-panen/mitra', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
