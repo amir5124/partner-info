@@ -22,6 +22,9 @@ const DEFAULT_PARTNER_STATUS = '2';
 // Component UID
 const MAKANAN_COMPONENT_UID = '618637dbc8415';    // Jastip Makanan
 const PETANI_COMPONENT_UID = '6a48d1e936ae2';     // Petani Lokal
+const PREORDER_COMPONENT_UID = '150313187266a4c96a3639b16.85140307';
+const PANEN_HARI_INI_COMPONENT_UID = '240213187266a4c967075d019.51911072';
+const JADWAL_PANEN_COMPONENT_UID = '550313187266a4c96cba28072.25599401';
 const JAGEL_BASE_URL = 'https://app.jagel.id/api/v2/customer';
 
 // Default koordinat
@@ -846,11 +849,7 @@ app.get('/api/partner/:viewUid', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────
-// 🌾 ENDPOINT: GET /api/partner/report/pertanian
-// (dibiarkan tetap ada sesuai permintaan, tidak dipakai lagi oleh frontend Petani Lokal
-//  tapi masih tersedia jika dibutuhkan endpoint/fitur lain)
-// ─────────────────────────────────────────────────────────────
+
 app.get('/api/partner/report/pertanian', async (req, res) => {
     const { unique_id, paginate, partner_status, page } = req.query;
 
@@ -994,13 +993,7 @@ async function getPertanianEnrichmentMap() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────
-// 🌾 ENDPOINT: GET /api/petani/mitra (VERSI ENRICHED)
-// Daftar mitra petani lokal dari endpoint jagel component,
-// digabung dengan data lokasi/pengelola/tanggal gabung dari
-// /partner/report agar view_uid tetap valid untuk fetch produk.
-// Query params: page (default 1), per_page (default 24)
-// ─────────────────────────────────────────────────────────────
+
 app.get('/api/petani/mitra', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -1153,6 +1146,467 @@ app.get('/api/petani/produk/:mitraUid', async (req, res) => {
 
     } catch (err) {
         console.error('❌ [petani/produk]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+
+app.get('/api/preorder/mitra', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const perPage = parseInt(req.query.per_page) || 24;
+
+        console.log(`🥬 [preorder/mitra] page=${page}, per_page=${perPage}`);
+
+        const [componentData, enrichment] = await Promise.all([
+            jagelGet(`/component/${PREORDER_COMPONENT_UID}`, {
+                codename: JAGEL_CODENAME,
+                page,
+                app_mode: 1,
+                per_page: perPage,
+            }),
+            getPertanianEnrichmentMap(), // reuse map yang sudah ada
+        ]);
+
+        const lists = componentData.lists || {};
+        const rawItems = lists.data || [];
+
+        const mitra = rawItems.map(item => {
+            const enrich =
+                enrichment.mapByPartnerViewUid[item.partner_view_uid] ||
+                enrichment.mapByViewUid[item.view_uid] ||
+                {};
+
+            return {
+                view_uid: item.view_uid,           // ← dipakai untuk fetch produk
+                title: (item.title || '').trim(),
+                image: item.image || null,
+                content: item.content || '',
+                is_open: item.is_open === 1,
+                close_status: item.close_status || '',
+                partner_view_uid: item.partner_view_uid || null,
+                partner_name: item.partner_name || null,
+                link_view: item.link_view || null,
+                distance: item.distance ?? null,
+                // ── data hasil enrichment (bisa kosong jika tidak ketemu) ──
+                ownerFirstName: enrich.ownerFirstName || '',
+                kecamatan: enrich.kecamatan || '',
+                kabupaten: enrich.kabupaten || '',
+                provinsi: enrich.provinsi || '',
+                desa: enrich.desa || '',
+                location_raw: enrich.location_raw || null,
+                joinedDate: enrich.joinedDate || null,
+            };
+        });
+
+        res.json({
+            success: true,
+            component: {
+                view_uid: componentData.view_uid,
+                name: componentData.name,
+            },
+            data: mitra,
+            pagination: {
+                current_page: lists.current_page || page,
+                last_page: lists.last_page || 1,
+                per_page: lists.per_page || perPage,
+                total: lists.total || mitra.length,
+            }
+        });
+    } catch (err) {
+        console.error('❌ [preorder/mitra]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.get('/api/preorder/produk/:mitraUid', async (req, res) => {
+    try {
+        const { mitraUid } = req.params;
+        const page = parseInt(req.query.page) || 1;
+        const searchList = req.query.search_list || '';
+
+        console.log(`🥬 [preorder/produk] mitra=${mitraUid}, page=${page}, search_list="${searchList}"`);
+
+        let childrenData;
+        let actualUid = mitraUid;
+
+        try {
+            childrenData = await jagelGet(`/list/${mitraUid}/children`, {
+                codename: JAGEL_CODENAME,
+                page,
+                search_list: searchList,
+            });
+        } catch (err) {
+            console.log(`⚠️ fetch children gagal untuk ${mitraUid}, mencoba mencari ulang di komponen Preorder...`);
+
+            const componentData = await jagelGet(`/component/${PREORDER_COMPONENT_UID}`, {
+                codename: JAGEL_CODENAME,
+                page: 1,
+                app_mode: 1,
+                per_page: 100,
+            });
+            const allMitra = componentData.lists?.data || [];
+
+            const foundMitra = allMitra.find(m =>
+                m.view_uid === mitraUid ||
+                m.partner_view_uid === mitraUid
+            );
+
+            if (foundMitra) {
+                actualUid = foundMitra.view_uid;
+                console.log(`🔄 Ditemukan mitra: ${foundMitra.title} dengan view_uid: ${actualUid}`);
+                childrenData = await jagelGet(`/list/${actualUid}/children`, {
+                    codename: JAGEL_CODENAME,
+                    page,
+                    search_list: searchList,
+                });
+            } else {
+                throw new Error(`Mitra dengan UID ${mitraUid} tidak ditemukan di komponen Preorder`);
+            }
+        }
+
+        const rawProducts = (childrenData.data || []).filter(i => i.type === 0 || i.purchasable === 1);
+
+        const produk = rawProducts.map(p => ({
+            view_uid: p.view_uid,
+            title: (p.title || '').trim(),
+            image: p.image || null,
+            price: p.price || 0,
+            currency: p.currency || 'Rp',
+            content: p.content || '',
+            is_open: p.is_open === 1,
+            close_status: p.close_status || '',
+            max_qty: p.max_qty || null,
+            partner_view_uid: p.partner_view_uid || null,
+        }));
+
+        res.json({
+            success: true,
+            mitra_view_uid: actualUid,
+            data: produk,
+            pagination: {
+                current_page: childrenData.current_page || page,
+                last_page: childrenData.last_page || 1,
+                per_page: childrenData.per_page || produk.length,
+                total: childrenData.total || produk.length,
+            }
+        });
+
+    } catch (err) {
+        console.error('❌ [preorder/produk]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+
+// ─────────────────────────────────────────────────────────────
+app.get('/api/panen-hari-ini/mitra', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const perPage = parseInt(req.query.per_page) || 24;
+
+        console.log(`🥭 [panen-hari-ini/mitra] page=${page}, per_page=${perPage}`);
+
+        const [componentData, enrichment] = await Promise.all([
+            jagelGet(`/component/${PANEN_HARI_INI_COMPONENT_UID}`, {
+                codename: JAGEL_CODENAME,
+                page,
+                app_mode: 1,
+                per_page: perPage,
+            }),
+            getPertanianEnrichmentMap(),
+        ]);
+
+        const lists = componentData.lists || {};
+        const rawItems = lists.data || [];
+
+        const mitra = rawItems.map(item => {
+            const enrich =
+                enrichment.mapByPartnerViewUid[item.partner_view_uid] ||
+                enrichment.mapByViewUid[item.view_uid] ||
+                {};
+
+            return {
+                view_uid: item.view_uid,
+                title: (item.title || '').trim(),
+                image: item.image || null,
+                content: item.content || '',
+                is_open: item.is_open === 1,
+                close_status: item.close_status || '',
+                partner_view_uid: item.partner_view_uid || null,
+                partner_name: item.partner_name || null,
+                link_view: item.link_view || null,
+                distance: item.distance ?? null,
+                ownerFirstName: enrich.ownerFirstName || '',
+                kecamatan: enrich.kecamatan || '',
+                kabupaten: enrich.kabupaten || '',
+                provinsi: enrich.provinsi || '',
+                desa: enrich.desa || '',
+                location_raw: enrich.location_raw || null,
+                joinedDate: enrich.joinedDate || null,
+            };
+        });
+
+        res.json({
+            success: true,
+            component: {
+                view_uid: componentData.view_uid,
+                name: componentData.name,
+            },
+            data: mitra,
+            pagination: {
+                current_page: lists.current_page || page,
+                last_page: lists.last_page || 1,
+                per_page: lists.per_page || perPage,
+                total: lists.total || mitra.length,
+            }
+        });
+    } catch (err) {
+        console.error('❌ [panen-hari-ini/mitra]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────
+// 🥭 ENDPOINT: GET /api/panen-hari-ini/produk/:mitraUid
+// Daftar produk "Panen Hari Ini" milik satu mitra — langsung ke
+// jagel /list/{uid}/children, dengan fallback pencarian ulang
+// lewat komponen Panen Hari Ini.
+// Query params: page (default 1), search_list (opsional)
+// ─────────────────────────────────────────────────────────────
+app.get('/api/panen-hari-ini/produk/:mitraUid', async (req, res) => {
+    try {
+        const { mitraUid } = req.params;
+        const page = parseInt(req.query.page) || 1;
+        const searchList = req.query.search_list || '';
+
+        console.log(`🥭 [panen-hari-ini/produk] mitra=${mitraUid}, page=${page}, search_list="${searchList}"`);
+
+        let childrenData;
+        let actualUid = mitraUid;
+
+        try {
+            childrenData = await jagelGet(`/list/${mitraUid}/children`, {
+                codename: JAGEL_CODENAME,
+                page,
+                search_list: searchList,
+            });
+        } catch (err) {
+            console.log(`⚠️ fetch children gagal untuk ${mitraUid}, mencoba mencari ulang di komponen Panen Hari Ini...`);
+
+            const componentData = await jagelGet(`/component/${PANEN_HARI_INI_COMPONENT_UID}`, {
+                codename: JAGEL_CODENAME,
+                page: 1,
+                app_mode: 1,
+                per_page: 100,
+            });
+            const allMitra = componentData.lists?.data || [];
+
+            const foundMitra = allMitra.find(m =>
+                m.view_uid === mitraUid ||
+                m.partner_view_uid === mitraUid
+            );
+
+            if (foundMitra) {
+                actualUid = foundMitra.view_uid;
+                console.log(`🔄 Ditemukan mitra: ${foundMitra.title} dengan view_uid: ${actualUid}`);
+                childrenData = await jagelGet(`/list/${actualUid}/children`, {
+                    codename: JAGEL_CODENAME,
+                    page,
+                    search_list: searchList,
+                });
+            } else {
+                throw new Error(`Mitra dengan UID ${mitraUid} tidak ditemukan di komponen Panen Hari Ini`);
+            }
+        }
+
+        const rawProducts = (childrenData.data || []).filter(i => i.type === 0 || i.purchasable === 1);
+
+        const produk = rawProducts.map(p => ({
+            view_uid: p.view_uid,
+            title: (p.title || '').trim(),
+            image: p.image || null,
+            price: p.price || 0,
+            currency: p.currency || 'Rp',
+            content: p.content || '',
+            is_open: p.is_open === 1,
+            close_status: p.close_status || '',
+            max_qty: p.max_qty || null,
+            partner_view_uid: p.partner_view_uid || null,
+        }));
+
+        res.json({
+            success: true,
+            mitra_view_uid: actualUid,
+            data: produk,
+            pagination: {
+                current_page: childrenData.current_page || page,
+                last_page: childrenData.last_page || 1,
+                per_page: childrenData.per_page || produk.length,
+                total: childrenData.total || produk.length,
+            }
+        });
+
+    } catch (err) {
+        console.error('❌ [panen-hari-ini/produk]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────
+// 🌱 ENDPOINT: GET /api/jadwal-panen/mitra
+// Daftar mitra "Jadwal Panen", pola sama seperti di atas.
+// Query params: page (default 1), per_page (default 24)
+// ─────────────────────────────────────────────────────────────
+app.get('/api/jadwal-panen/mitra', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const perPage = parseInt(req.query.per_page) || 24;
+
+        console.log(`🌱 [jadwal-panen/mitra] page=${page}, per_page=${perPage}`);
+
+        const [componentData, enrichment] = await Promise.all([
+            jagelGet(`/component/${JADWAL_PANEN_COMPONENT_UID}`, {
+                codename: JAGEL_CODENAME,
+                page,
+                app_mode: 1,
+                per_page: perPage,
+            }),
+            getPertanianEnrichmentMap(),
+        ]);
+
+        const lists = componentData.lists || {};
+        const rawItems = lists.data || [];
+
+        const mitra = rawItems.map(item => {
+            const enrich =
+                enrichment.mapByPartnerViewUid[item.partner_view_uid] ||
+                enrichment.mapByViewUid[item.view_uid] ||
+                {};
+
+            return {
+                view_uid: item.view_uid,
+                title: (item.title || '').trim(),
+                image: item.image || null,
+                content: item.content || '',
+                is_open: item.is_open === 1,
+                close_status: item.close_status || '',
+                partner_view_uid: item.partner_view_uid || null,
+                partner_name: item.partner_name || null,
+                link_view: item.link_view || null,
+                distance: item.distance ?? null,
+                ownerFirstName: enrich.ownerFirstName || '',
+                kecamatan: enrich.kecamatan || '',
+                kabupaten: enrich.kabupaten || '',
+                provinsi: enrich.provinsi || '',
+                desa: enrich.desa || '',
+                location_raw: enrich.location_raw || null,
+                joinedDate: enrich.joinedDate || null,
+            };
+        });
+
+        res.json({
+            success: true,
+            component: {
+                view_uid: componentData.view_uid,
+                name: componentData.name,
+            },
+            data: mitra,
+            pagination: {
+                current_page: lists.current_page || page,
+                last_page: lists.last_page || 1,
+                per_page: lists.per_page || perPage,
+                total: lists.total || mitra.length,
+            }
+        });
+    } catch (err) {
+        console.error('❌ [jadwal-panen/mitra]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────
+// 🌱 ENDPOINT: GET /api/jadwal-panen/produk/:mitraUid
+// Daftar produk "Jadwal Panen" milik satu mitra — langsung ke
+// jagel /list/{uid}/children, dengan fallback pencarian ulang
+// lewat komponen Jadwal Panen.
+// Query params: page (default 1), search_list (opsional)
+// ─────────────────────────────────────────────────────────────
+app.get('/api/jadwal-panen/produk/:mitraUid', async (req, res) => {
+    try {
+        const { mitraUid } = req.params;
+        const page = parseInt(req.query.page) || 1;
+        const searchList = req.query.search_list || '';
+
+        console.log(`🌱 [jadwal-panen/produk] mitra=${mitraUid}, page=${page}, search_list="${searchList}"`);
+
+        let childrenData;
+        let actualUid = mitraUid;
+
+        try {
+            childrenData = await jagelGet(`/list/${mitraUid}/children`, {
+                codename: JAGEL_CODENAME,
+                page,
+                search_list: searchList,
+            });
+        } catch (err) {
+            console.log(`⚠️ fetch children gagal untuk ${mitraUid}, mencoba mencari ulang di komponen Jadwal Panen...`);
+
+            const componentData = await jagelGet(`/component/${JADWAL_PANEN_COMPONENT_UID}`, {
+                codename: JAGEL_CODENAME,
+                page: 1,
+                app_mode: 1,
+                per_page: 100,
+            });
+            const allMitra = componentData.lists?.data || [];
+
+            const foundMitra = allMitra.find(m =>
+                m.view_uid === mitraUid ||
+                m.partner_view_uid === mitraUid
+            );
+
+            if (foundMitra) {
+                actualUid = foundMitra.view_uid;
+                console.log(`🔄 Ditemukan mitra: ${foundMitra.title} dengan view_uid: ${actualUid}`);
+                childrenData = await jagelGet(`/list/${actualUid}/children`, {
+                    codename: JAGEL_CODENAME,
+                    page,
+                    search_list: searchList,
+                });
+            } else {
+                throw new Error(`Mitra dengan UID ${mitraUid} tidak ditemukan di komponen Jadwal Panen`);
+            }
+        }
+
+        const rawProducts = (childrenData.data || []).filter(i => i.type === 0 || i.purchasable === 1);
+
+        const produk = rawProducts.map(p => ({
+            view_uid: p.view_uid,
+            title: (p.title || '').trim(),
+            image: p.image || null,
+            price: p.price || 0,
+            currency: p.currency || 'Rp',
+            content: p.content || '',
+            is_open: p.is_open === 1,
+            close_status: p.close_status || '',
+            max_qty: p.max_qty || null,
+            partner_view_uid: p.partner_view_uid || null,
+        }));
+
+        res.json({
+            success: true,
+            mitra_view_uid: actualUid,
+            data: produk,
+            pagination: {
+                current_page: childrenData.current_page || page,
+                last_page: childrenData.last_page || 1,
+                per_page: childrenData.per_page || produk.length,
+                total: childrenData.total || produk.length,
+            }
+        });
+
+    } catch (err) {
+        console.error('❌ [jadwal-panen/produk]', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
