@@ -1594,6 +1594,67 @@ app.get('/api/jadwal-panen/produk/:mitraUid', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// 🎟️ ENDPOINT: GET /api/mydiscount
+// Ambil voucher/diskon dari Jagel berdasarkan unique_id,
+// lalu filter hanya yang category === 1
+// Query params: filter (wajib), unique_id (wajib)
+// ─────────────────────────────────────────────────────────────
+async function fetchMyDiscount({ filter, unique_id }) {
+    const url = 'https://app.jagel.id/api/mydiscount';
+
+    console.log('🌐 Fetch mydiscount (GET):', url, { filter, unique_id });
+
+    const response = await axios.get(url, {
+        headers: jagelHeaders,
+        params: { filter, unique_id }
+    });
+
+    if (!response.data || !response.data.success) {
+        throw new Error(response.data?.message || 'Mydiscount API error');
+    }
+
+    return response.data.data;
+}
+
+app.get('/api/mydiscount', async (req, res) => {
+    const { filter, unique_id } = req.query;
+
+    console.log('🎟️ [MYDISCOUNT] Request received:');
+    console.log('   filter:', filter);
+    console.log('   unique_id:', unique_id);
+
+    if (!unique_id) {
+        return res.status(400).json({ success: false, error: 'unique_id is required' });
+    }
+    if (filter === undefined) {
+        return res.status(400).json({ success: false, error: 'filter is required' });
+    }
+
+    try {
+        const data = await fetchMyDiscount({ filter, unique_id });
+
+        // Filter hanya mitra dengan diskon category === 1
+        const filteredDiscounts = (data.discounts || []).filter(
+            (discount) => discount.category === 1
+        );
+
+        console.log(`✅ Total discounts: ${data.discounts?.length || 0}, category=1: ${filteredDiscounts.length}`);
+
+        res.json({
+            success: true,
+            data: {
+                ...data,
+                discounts: filteredDiscounts
+            }
+        });
+
+    } catch (err) {
+        console.error('❌ [MYDISCOUNT] Error:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────
 // START SERVER
 // ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
