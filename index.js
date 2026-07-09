@@ -1652,19 +1652,11 @@ app.get('/api/mydiscount', async (req, res) => {
     try {
         const data = await fetchMyDiscount({ filter, unique_id });
 
-        // Filter hanya mitra dengan diskon category === 1
-        const filteredDiscounts = (data.discounts || []).filter(
-            (discount) => discount.category === 1
-        );
-
-        console.log(`✅ Total discounts: ${data.discounts?.length || 0}, category=1: ${filteredDiscounts.length}`);
+        console.log(`✅ Total discounts: ${data.discounts?.length || 0}`);
 
         res.json({
             success: true,
-            data: {
-                ...data,
-                discounts: filteredDiscounts
-            }
+            data
         });
 
     } catch (err) {
