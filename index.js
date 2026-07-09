@@ -1021,7 +1021,7 @@ app.get('/api/petani/mitra', async (req, res) => {
                 {};
 
             return {
-                view_uid: item.view_uid,           // ← tetap valid untuk fetch produk
+                view_uid: item.view_uid,
                 title: (item.title || '').trim(),
                 image: item.image || null,
                 content: item.content || '',
@@ -1031,7 +1031,10 @@ app.get('/api/petani/mitra', async (req, res) => {
                 partner_name: item.partner_name || null,
                 link_view: item.link_view || null,
                 distance: item.distance ?? null,
-                // ── data hasil enrichment (bisa null jika tidak ketemu) ──
+                // ── Tambahkan origin_lat dan origin_lng ──
+                origin_lat: item.origin_lat || enrich.origin_lat || null,
+                origin_lng: item.origin_lng || enrich.origin_lng || null,
+                // ── data hasil enrichment ──
                 ownerFirstName: enrich.ownerFirstName || '',
                 kecamatan: enrich.kecamatan || '',
                 kabupaten: enrich.kabupaten || '',
