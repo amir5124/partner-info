@@ -1020,6 +1020,23 @@ app.get('/api/petani/mitra', async (req, res) => {
                 enrichment.mapByViewUid[item.view_uid] ||
                 {};
 
+            // ── Parse location_raw untuk ambil koordinat ──
+            let origin_lat = null;
+            let origin_lng = null;
+            const locationRaw = enrich.location_raw || '';
+
+            if (locationRaw && locationRaw.includes(';')) {
+                const parts = locationRaw.split(';');
+                if (parts.length >= 3) {
+                    const lat = parseFloat(parts[1]);
+                    const lng = parseFloat(parts[2]);
+                    if (!isNaN(lat) && !isNaN(lng)) {
+                        origin_lat = lat;
+                        origin_lng = lng;
+                    }
+                }
+            }
+
             return {
                 view_uid: item.view_uid,
                 title: (item.title || '').trim(),
@@ -1031,16 +1048,16 @@ app.get('/api/petani/mitra', async (req, res) => {
                 partner_name: item.partner_name || null,
                 link_view: item.link_view || null,
                 distance: item.distance ?? null,
-                // ── Tambahkan origin_lat dan origin_lng ──
-                origin_lat: item.origin_lat || enrich.origin_lat || null,
-                origin_lng: item.origin_lng || enrich.origin_lng || null,
+                // ── Koordinat dari location_raw ──
+                origin_lat: origin_lat,
+                origin_lng: origin_lng,
                 // ── data hasil enrichment ──
                 ownerFirstName: enrich.ownerFirstName || '',
                 kecamatan: enrich.kecamatan || '',
                 kabupaten: enrich.kabupaten || '',
                 provinsi: enrich.provinsi || '',
                 desa: enrich.desa || '',
-                location_raw: enrich.location_raw || null,
+                location_raw: locationRaw || null,
                 joinedDate: enrich.joinedDate || null,
             };
         });
@@ -1064,7 +1081,6 @@ app.get('/api/petani/mitra', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
-
 
 app.get('/api/petani/produk/:mitraUid', async (req, res) => {
     try {
