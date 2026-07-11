@@ -1763,27 +1763,54 @@ async function fetchAllDriverOrdersForDate({
     return { items: collected, appMeta, pagesScanned };
 }
 
-// Cari nomor HP driver di beberapa kemungkinan struktur response.
-// SESUAIKAN jika kamu sudah tahu nama field pastinya dari response asli.
+// Cari nomor HP driver — field asli ada di data.driver.phone
 function extractDriverPhone(detail) {
     return (
-        detail?.driver_phone ||
         detail?.driver?.phone ||
-        detail?.phone ||
-        detail?.user_phone ||
+        detail?.driver_phone ||
         null
     );
 }
 
-// Cari jenis kurir/ekspedisi di beberapa kemungkinan struktur response.
-// SESUAIKAN jika kamu sudah tahu nama field pastinya dari response asli.
+// Jenis kurir/ekspedisi — field asli ada di data.expedition
 function extractExpedition(detail) {
-    return (
-        detail?.expedition ||
-        detail?.driver?.expedition ||
-        detail?.order?.expedition ||
-        null
-    );
+    return detail?.expedition || null;
+}
+
+// Info driver lengkap (nama, plat nomor, model motor, dll)
+function extractDriverInfo(detail) {
+    const d = detail?.driver || {};
+    return {
+        view_uid: d.view_uid || null,
+        name: d.name || null,
+        phone: d.phone || null,
+        license_plate: d.driver_license_plate || null,
+        vehicle_model: d.driver_model || null,
+        photo: d.photo || null,
+    };
+}
+
+// ─────────────────────────────────────────────────────────────
+// Jarak tempuh order — dipakai untuk hitung komisi BBM.
+// Diambil dari data.lines[], baris dengan category === 2
+// (baris "Kurir Food" / ongkir) yang punya field distance.
+// distance dari jagel dalam METER.
+// ─────────────────────────────────────────────────────────────
+function extractDistanceInfo(detail) {
+    const lines = detail?.lines || [];
+
+    let target = lines.find(l => l.category === 2 && l.distance != null);
+    if (!target) target = lines.find(l => l.distance != null); // fallback
+
+    if (!target) {
+        return { distance_meters: null, distance_km: null, distance_text: null };
+    }
+
+    return {
+        distance_meters: target.distance,
+        distance_km: Math.round((target.distance / 1000) * 100) / 100, // 2 desimal
+        distance_text: target.distance_text || null,
+    };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1875,22 +1902,60 @@ app.get('/api/driver/report', async (req, res) => {
             });
         }
 
-        const data = filtered.map(r => ({
-            driver_username: r.item.driver_username,
-            creation_date: r.item.creation_date,
-            order_no: r.item.order_no,
-            unique_id: r.item.unique_id,
-            total_price: r.item.total_price,
-            currency: r.item.currency,
-            expedition: extractExpedition(r.detail),
-            driver_phone: extractDriverPhone(r.detail),
-            detail: r.detail   // detail lengkap ikut dikirim, silakan pangkas di frontend kalau tidak perlu semua
-        }));
+        const data = filtered.map(r => {
+            const distanceInfo = extractDistanceInfo(r.detail);
+            return {
+                driver_username: r.item.driver_username,
+                creation_date: r.item.creation_date,
+                order_no: r.item.order_no,
+                unique_id: r.item.unique_id,
+                total_price: r.item.total_price,
+                currency: r.item.currency,
+                expedition: extractExpedition(r.detail),
+                driver_phone: extractDriverPhone(r.detail),
+                driver_info: extractDriverInfo(r.detail),
+                distance_meters: distanceInfo.distance_meters,
+                distance_km: distanceInfo.distance_km,
+                distance_text: distanceInfo.distance_text,
+                shipping: r.detail?.shipping ?? null,
+                freight_charge: r.detail?.freight_charge ?? null,
+                order_fee: r.detail?.order_fee ?? null,
+                partner_commission_total: r.detail?.partner_commission_total ?? null,
+                order_status: r.detail?.order_status ?? null,
+            };
+        });
 
         const failedCount = enrichedResults.filter(r => !r.ok).length;
 
         // Total nilai order (berguna buat rekap komisi BBM harian)
         const totalOrderValue = data.reduce((sum, d) => sum + (d.total_price || 0), 0);
+        const totalDistanceKm = data.reduce((sum, d) => sum + (d.distance_km || 0), 0);
+
+        // ── Ringkasan per driver: total order, total km, total nilai order ──
+        // Ini yang dipakai untuk hitung ulang komisi BBM tiap hari (reset per hari).
+        const summaryMap = {};
+        data.forEach(d => {
+            const key = d.driver_username || d.driver_phone || 'unknown';
+            if (!summaryMap[key]) {
+                summaryMap[key] = {
+                    driver_username: d.driver_username,
+                    driver_name: d.driver_info?.name || null,
+                    driver_phone: d.driver_phone,
+                    license_plate: d.driver_info?.license_plate || null,
+                    total_orders: 0,
+                    total_distance_km: 0,
+                    total_order_value: 0,
+                };
+            }
+            summaryMap[key].total_orders += 1;
+            summaryMap[key].total_distance_km += (d.distance_km || 0);
+            summaryMap[key].total_order_value += (d.total_price || 0);
+        });
+
+        const summaryByDriver = Object.values(summaryMap).map(s => ({
+            ...s,
+            total_distance_km: Math.round(s.total_distance_km * 100) / 100,
+        }));
 
         res.json({
             success: true,
@@ -1907,7 +1972,9 @@ app.get('/api/driver/report', async (req, res) => {
             total_raw: driverList.length,
             total_filtered: data.length,
             total_order_value: totalOrderValue,
+            total_distance_km: Math.round(totalDistanceKm * 100) / 100,
             failed_detail_fetch: failedCount,
+            summary_by_driver: summaryByDriver,
             data
         });
 
