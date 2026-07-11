@@ -26,6 +26,7 @@ const PREORDER_COMPONENT_UID = '150313187266a4c96a3639b16.85140307';
 const PANEN_HARI_INI_COMPONENT_UID = '240213187266a4c967075d019.51911072';
 const JADWAL_PANEN_COMPONENT_UID = '550313187266a4c96cba28072.25599401';
 const JAGEL_BASE_URL = 'https://app.jagel.id/api/v2/customer';
+const DRIVER_EXPEDITION_FILTER = 'kurir - kurir food';
 
 // Default koordinat
 const defaultCoords = { lat: -0.975, lng: 116.786 };
@@ -1661,6 +1662,279 @@ app.get('/api/mydiscount', async (req, res) => {
 
     } catch (err) {
         console.error('❌ [MYDISCOUNT] Error:', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+
+async function fetchDriverReportList({ app_uid = DEFAULT_UNIQUE_ID, paginate = 10, page = 1 }) {
+    const url = 'https://app.jagel.id/api/owner/driver/report';
+    const payload = { app_uid, paginate, page };
+
+    console.log('🌐 Fetch driver report (POST):', url, payload);
+
+    const response = await axios.post(url, payload, { headers: jagelHeaders });
+
+    if (!response.data || !response.data.success) {
+        throw new Error('Driver report API error');
+    }
+
+    return response.data.data;
+}
+
+// ─────────────────────────────────────────────────────────────
+// 🔥 FUNGSI: Ambil detail 1 order driver — GET
+// ─────────────────────────────────────────────────────────────
+async function fetchDriverOrderDetail(uniqueId) {
+    const url = `https://app.jagel.id/api/order/view-detail-owner/${uniqueId}`;
+
+    console.log('🌐 Fetch driver order detail:', url);
+
+    const response = await axios.get(url, { headers: jagelHeaders });
+
+    if (!response.data || !response.data.success) {
+        throw new Error(`Driver detail API error for ${uniqueId}`);
+    }
+
+    return response.data.data;
+}
+
+// ─────────────────────────────────────────────────────────────
+// 🗓️ HELPER: Dapatkan tanggal "hari ini" dalam zona waktu Jakarta
+// Format: YYYY-MM-DD
+// ─────────────────────────────────────────────────────────────
+function getJakartaDateString(offsetDays = 0) {
+    const now = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
+    // en-CA locale menghasilkan format YYYY-MM-DD secara default
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta' }).format(now);
+}
+
+// Ambil bagian tanggal saja dari creation_date, mis. "2026-07-09 19:30:56" -> "2026-07-09"
+function extractDateOnly(creationDate) {
+    if (!creationDate) return null;
+    return String(creationDate).split(' ')[0];
+}
+
+// ─────────────────────────────────────────────────────────────
+// 🔥 FUNGSI: Ambil SEMUA order driver untuk 1 tanggal tertentu.
+//
+// Karena list dari jagel terurut dari order terbaru -> terlama,
+// begitu ditemukan order dengan tanggal LEBIH LAMA dari target,
+// loop langsung berhenti (tidak perlu scan semua halaman).
+// ─────────────────────────────────────────────────────────────
+async function fetchAllDriverOrdersForDate({
+    app_uid = DEFAULT_UNIQUE_ID,
+    targetDate,
+    perPage = 50,
+    maxPages = 50,
+}) {
+    let page = 1;
+    let collected = [];
+    let stop = false;
+    let appMeta = null;
+    let pagesScanned = 0;
+
+    while (!stop && page <= maxPages) {
+        const reportData = await fetchDriverReportList({ app_uid, paginate: perPage, page });
+        if (!appMeta) appMeta = reportData;
+        pagesScanned = page;
+
+        const items = reportData?.driver?.data || [];
+        if (items.length === 0) break;
+
+        for (const item of items) {
+            const itemDate = extractDateOnly(item.creation_date);
+            if (itemDate === targetDate) {
+                collected.push(item);
+            } else if (itemDate && itemDate < targetDate) {
+                // Data sudah lebih lama dari tanggal target -> berhenti scan
+                stop = true;
+                break;
+            }
+            // jika itemDate > targetDate (order lebih baru dari target, kasus jarang
+            // misal request tanggal kemarin sementara halaman 1 masih order hari ini) -> skip, lanjut
+        }
+
+        const lastPage = reportData?.driver?.last_page || 1;
+        if (page >= lastPage) break;
+        page++;
+    }
+
+    return { items: collected, appMeta, pagesScanned };
+}
+
+// Cari nomor HP driver di beberapa kemungkinan struktur response.
+// SESUAIKAN jika kamu sudah tahu nama field pastinya dari response asli.
+function extractDriverPhone(detail) {
+    return (
+        detail?.driver_phone ||
+        detail?.driver?.phone ||
+        detail?.phone ||
+        detail?.user_phone ||
+        null
+    );
+}
+
+// Cari jenis kurir/ekspedisi di beberapa kemungkinan struktur response.
+// SESUAIKAN jika kamu sudah tahu nama field pastinya dari response asli.
+function extractExpedition(detail) {
+    return (
+        detail?.expedition ||
+        detail?.driver?.expedition ||
+        detail?.order?.expedition ||
+        null
+    );
+}
+
+// ─────────────────────────────────────────────────────────────
+// ENDPOINT: GET /api/driver/report
+//
+// Query params:
+//   - date         (format YYYY-MM-DD, default: HARI INI zona Jakarta)
+//                   -> hanya order pada tanggal ini yang dikembalikan.
+//                   Kirim date=all untuk MATIKAN filter tanggal (pakai mode lama: page/paginate manual)
+//   - page         (dipakai HANYA jika date=all, default 1)
+//   - paginate     (dipakai HANYA jika date=all, default 10; jika date aktif,
+//                   dipakai sebagai ukuran per-request saat auto-scan, default 50)
+//   - app_uid      (default DEFAULT_UNIQUE_ID, boleh dioverride)
+//   - phone        (opsional — filter tambahan by nomor HP driver)
+//
+// Alur (mode default / date aktif):
+//   1. Auto-scan halaman demi halaman dari /owner/driver/report (POST)
+//      mulai dari yang terbaru, kumpulkan semua order dengan
+//      creation_date == tanggal target, berhenti begitu ketemu order
+//      yang tanggalnya lebih lama (karena data terurut terbaru->terlama)
+//   2. Untuk tiap order hasil scan, GET /order/view-detail-owner/:unique_id
+//   3. Hanya order dengan expedition === "kurir - kurir food" yang dikembalikan
+//   4. Jika query "phone" diisi, filter tambahan by nomor HP driver
+// ─────────────────────────────────────────────────────────────
+app.get('/api/driver/report', async (req, res) => {
+    try {
+        const app_uid = req.query.app_uid || DEFAULT_UNIQUE_ID;
+        const phoneFilter = req.query.phone ? String(req.query.phone).trim() : null;
+        const dateParam = req.query.date; // 'YYYY-MM-DD' | 'all' | undefined
+
+        let driverList = [];
+        let reportData = null;
+        let targetDate = null;
+        let pagesScanned = null;
+
+        if (dateParam === 'all') {
+            // ── Mode lama: single page manual, tanpa filter tanggal ──
+            const page = parseInt(req.query.page) || 1;
+            const paginate = parseInt(req.query.paginate) || 10;
+
+            console.log(`🚗 [driver/report] mode=all-pages-off, page=${page}, paginate=${paginate}, phone=${phoneFilter || '-'}`);
+
+            reportData = await fetchDriverReportList({ app_uid, paginate, page });
+            driverList = reportData?.driver?.data || [];
+        } else {
+            // ── Mode default: filter by tanggal (hari ini kalau tidak diisi) ──
+            targetDate = dateParam || getJakartaDateString();
+            const perPage = parseInt(req.query.paginate) || 50;
+
+            console.log(`🚗 [driver/report] mode=date-filter, date=${targetDate}, phone=${phoneFilter || '-'}`);
+
+            const scanResult = await fetchAllDriverOrdersForDate({ app_uid, targetDate, perPage });
+            driverList = scanResult.items;
+            reportData = scanResult.appMeta;
+            pagesScanned = scanResult.pagesScanned;
+        }
+
+        // 2. Ambil detail tiap order secara batch (biar tidak membanjiri API jagel)
+        const batches = chunk(driverList, BATCH_SIZE);
+        const enrichedResults = [];
+
+        for (const batch of batches) {
+            const batchResults = await Promise.all(batch.map(async (item) => {
+                try {
+                    const detail = await fetchDriverOrderDetail(item.unique_id);
+                    return { ok: true, item, detail };
+                } catch (err) {
+                    console.log(`⚠️ Gagal ambil detail order ${item.unique_id}: ${err.message}`);
+                    return { ok: false, item, error: err.message };
+                }
+            }));
+            enrichedResults.push(...batchResults);
+        }
+
+        // 3. Filter hanya expedition = "kurir - kurir food"
+        let filtered = enrichedResults
+            .filter(r => r.ok)
+            .filter(r => {
+                const expedition = extractExpedition(r.detail);
+                return typeof expedition === 'string'
+                    && expedition.toLowerCase() === DRIVER_EXPEDITION_FILTER.toLowerCase();
+            });
+
+        // 4. Filter tambahan by phone (kalau diminta frontend)
+        if (phoneFilter) {
+            filtered = filtered.filter(r => {
+                const phone = extractDriverPhone(r.detail);
+                return phone && String(phone).includes(phoneFilter);
+            });
+        }
+
+        const data = filtered.map(r => ({
+            driver_username: r.item.driver_username,
+            creation_date: r.item.creation_date,
+            order_no: r.item.order_no,
+            unique_id: r.item.unique_id,
+            total_price: r.item.total_price,
+            currency: r.item.currency,
+            expedition: extractExpedition(r.detail),
+            driver_phone: extractDriverPhone(r.detail),
+            detail: r.detail   // detail lengkap ikut dikirim, silakan pangkas di frontend kalau tidak perlu semua
+        }));
+
+        const failedCount = enrichedResults.filter(r => !r.ok).length;
+
+        // Total nilai order (berguna buat rekap komisi BBM harian)
+        const totalOrderValue = data.reduce((sum, d) => sum + (d.total_price || 0), 0);
+
+        res.json({
+            success: true,
+            app_name: reportData?.app_name || null,
+            rating: reportData?.rating || null,
+            done: reportData?.done || null,
+            revenue: reportData?.revenue || null,
+            currency: reportData?.currency || 'Rp',
+            filter: {
+                date: targetDate,               // null jika mode date=all
+                pages_scanned: pagesScanned,    // null jika mode date=all
+                phone: phoneFilter,
+            },
+            total_raw: driverList.length,
+            total_filtered: data.length,
+            total_order_value: totalOrderValue,
+            failed_detail_fetch: failedCount,
+            data
+        });
+
+    } catch (err) {
+        console.error('❌ [driver/report]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────
+// ENDPOINT: GET /api/driver/report/detail/:uniqueId
+// Ambil detail 1 order driver langsung (tanpa filter apapun),
+// berguna untuk debugging / cek struktur field asli dari jagel.
+// ─────────────────────────────────────────────────────────────
+app.get('/api/driver/report/detail/:uniqueId', async (req, res) => {
+    try {
+        const { uniqueId } = req.params;
+        const detail = await fetchDriverOrderDetail(uniqueId);
+
+        res.json({
+            success: true,
+            expedition: extractExpedition(detail),
+            driver_phone: extractDriverPhone(detail),
+            data: detail
+        });
+    } catch (err) {
+        console.error('❌ [driver/report/detail]', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
