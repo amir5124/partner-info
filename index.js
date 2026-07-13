@@ -1984,6 +1984,171 @@ app.get('/api/driver/report', async (req, res) => {
     }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// TAMBAHAN: ENDPOINT DRIVER REPORT — TANPA FILTER EXPEDITION
+// Sama seperti /api/driver/report, tapi TIDAK memfilter berdasarkan
+// jenis kurir (expedition). Semua jenis ekspedisi akan ikut tampil.
+// Cara pakai: tempel di server.js, SETELAH endpoint /api/driver/report
+// yang sudah ada (supaya semua helper function di atasnya bisa dipakai:
+// fetchDriverReportList, fetchAllDriverOrdersForDate, fetchDriverOrderDetail,
+// extractExpedition, extractDriverPhone, extractDriverInfo,
+// extractDistanceInfo, chunk, BATCH_SIZE, DEFAULT_UNIQUE_ID,
+// getJakartaDateString)
+// ═══════════════════════════════════════════════════════════════
+
+app.get('/api/driver/report/all-expedition', async (req, res) => {
+    try {
+        const app_uid = req.query.app_uid || DEFAULT_UNIQUE_ID;
+        const phoneFilter = req.query.phone ? String(req.query.phone).trim() : null;
+        const dateParam = req.query.date; // 'YYYY-MM-DD' | 'all' | undefined
+
+        let driverList = [];
+        let reportData = null;
+        let targetDate = null;
+        let pagesScanned = null;
+
+        if (dateParam === 'all') {
+            // ── Mode lama: single page manual, tanpa filter tanggal ──
+            const page = parseInt(req.query.page) || 1;
+            const paginate = parseInt(req.query.paginate) || 10;
+
+            console.log(`🚗 [driver/report/all-expedition] mode=all-pages-off, page=${page}, paginate=${paginate}, phone=${phoneFilter || '-'}`);
+
+            reportData = await fetchDriverReportList({ app_uid, paginate, page });
+            driverList = reportData?.driver?.data || [];
+        } else {
+            // ── Mode default: filter by tanggal (hari ini kalau tidak diisi) ──
+            targetDate = dateParam || getJakartaDateString();
+            const perPage = parseInt(req.query.paginate) || 50;
+
+            console.log(`🚗 [driver/report/all-expedition] mode=date-filter, date=${targetDate}, phone=${phoneFilter || '-'}`);
+
+            const scanResult = await fetchAllDriverOrdersForDate({ app_uid, targetDate, perPage });
+            driverList = scanResult.items;
+            reportData = scanResult.appMeta;
+            pagesScanned = scanResult.pagesScanned;
+        }
+
+        // Ambil detail tiap order secara batch (biar tidak membanjiri API jagel)
+        const batches = chunk(driverList, BATCH_SIZE);
+        const enrichedResults = [];
+
+        for (const batch of batches) {
+            const batchResults = await Promise.all(batch.map(async (item) => {
+                try {
+                    const detail = await fetchDriverOrderDetail(item.unique_id);
+                    return { ok: true, item, detail };
+                } catch (err) {
+                    console.log(`⚠️ Gagal ambil detail order ${item.unique_id}: ${err.message}`);
+                    return { ok: false, item, error: err.message };
+                }
+            }));
+            enrichedResults.push(...batchResults);
+        }
+
+        // ── TIDAK ada filter expedition di sini ──
+        // Langsung ambil semua yang berhasil di-fetch detail-nya.
+        let filtered = enrichedResults.filter(r => r.ok);
+
+        // Filter tambahan by phone (kalau diminta frontend) — tetap dipertahankan
+        if (phoneFilter) {
+            filtered = filtered.filter(r => {
+                const phone = extractDriverPhone(r.detail);
+                return phone && String(phone).includes(phoneFilter);
+            });
+        }
+
+        const data = filtered.map(r => {
+            const distanceInfo = extractDistanceInfo(r.detail);
+            return {
+                driver_username: r.item.driver_username,
+                creation_date: r.item.creation_date,
+                order_no: r.item.order_no,
+                unique_id: r.item.unique_id,
+                total_price: r.item.total_price,
+                currency: r.item.currency,
+                expedition: extractExpedition(r.detail), // tetap ditampilkan, hanya tidak dipakai untuk filter
+                driver_phone: extractDriverPhone(r.detail),
+                driver_info: extractDriverInfo(r.detail),
+                distance_meters: distanceInfo.distance_meters,
+                distance_km: distanceInfo.distance_km,
+                distance_text: distanceInfo.distance_text,
+                shipping: r.detail?.shipping ?? null,
+                freight_charge: r.detail?.freight_charge ?? null,
+                order_fee: r.detail?.order_fee ?? null,
+                partner_commission_total: r.detail?.partner_commission_total ?? null,
+                order_status: r.detail?.order_status ?? null,
+            };
+        });
+
+        const failedCount = enrichedResults.filter(r => !r.ok).length;
+
+        const totalOrderValue = data.reduce((sum, d) => sum + (d.total_price || 0), 0);
+        const totalDistanceKm = data.reduce((sum, d) => sum + (d.distance_km || 0), 0);
+
+        // ── Ringkasan per driver (sama seperti endpoint asli) ──
+        const summaryMap = {};
+        data.forEach(d => {
+            const key = d.driver_username || d.driver_phone || 'unknown';
+            if (!summaryMap[key]) {
+                summaryMap[key] = {
+                    driver_username: d.driver_username,
+                    driver_name: d.driver_info?.name || null,
+                    driver_phone: d.driver_phone,
+                    license_plate: d.driver_info?.license_plate || null,
+                    total_orders: 0,
+                    total_distance_km: 0,
+                    total_order_value: 0,
+                };
+            }
+            summaryMap[key].total_orders += 1;
+            summaryMap[key].total_distance_km += (d.distance_km || 0);
+            summaryMap[key].total_order_value += (d.total_price || 0);
+        });
+
+        const summaryByDriver = Object.values(summaryMap).map(s => ({
+            ...s,
+            total_distance_km: Math.round(s.total_distance_km * 100) / 100,
+        }));
+
+        // ── Bonus: ringkasan jumlah order per jenis expedition ──
+        // Berguna untuk melihat sebaran expedition apa saja yang muncul
+        // (karena endpoint ini tidak lagi difilter ke satu jenis expedition).
+        const expeditionBreakdown = {};
+        data.forEach(d => {
+            const key = d.expedition || 'unknown';
+            expeditionBreakdown[key] = (expeditionBreakdown[key] || 0) + 1;
+        });
+
+        res.json({
+            success: true,
+            app_name: reportData?.app_name || null,
+            rating: reportData?.rating || null,
+            done: reportData?.done || null,
+            revenue: reportData?.revenue || null,
+            currency: reportData?.currency || 'Rp',
+            filter: {
+                date: targetDate,               // null jika mode date=all
+                pages_scanned: pagesScanned,    // null jika mode date=all
+                phone: phoneFilter,
+                expedition_filter: null,        // sengaja null -> menandakan tanpa filter expedition
+            },
+            total_raw: driverList.length,
+            total_filtered: data.length,
+            total_order_value: totalOrderValue,
+            total_distance_km: Math.round(totalDistanceKm * 100) / 100,
+            failed_detail_fetch: failedCount,
+            expedition_breakdown: expeditionBreakdown,
+            summary_by_driver: summaryByDriver,
+            data
+        });
+
+    } catch (err) {
+        console.error('❌ [driver/report/all-expedition]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // ─────────────────────────────────────────────────────────────
 // ENDPOINT: GET /api/driver/report/detail/:uniqueId
 // Ambil detail 1 order driver langsung (tanpa filter apapun),
