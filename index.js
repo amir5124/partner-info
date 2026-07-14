@@ -1817,31 +1817,7 @@ function extractDistanceInfo(detail) {
     };
 }
 
-// ─────────────────────────────────────────────────────────────
-// ENDPOINT: GET /api/driver/report
-//
-// Query params:
-//   - date         (format YYYY-MM-DD, default: HARI INI zona Jakarta)
-//                   -> hanya order pada tanggal ini yang dikembalikan.
-//                   Kirim date=all untuk MATIKAN filter tanggal (pakai mode lama: page/paginate manual)
-//   - page         (dipakai HANYA jika date=all, default 1)
-//   - paginate     (dipakai HANYA jika date=all, default 10; jika date aktif,
-//                   dipakai sebagai ukuran per-request saat auto-scan, default 50)
-//   - app_uid      (default DEFAULT_UNIQUE_ID, boleh dioverride)
-//   - phone        (opsional — filter tambahan by nomor HP driver)
-//
-// Alur (mode default / date aktif):
-//   1. Auto-scan halaman demi halaman dari /owner/driver/report (POST)
-//      mulai dari yang terbaru, kumpulkan semua order dengan
-//      creation_date == tanggal target, berhenti begitu ketemu order
-//      yang tanggalnya lebih lama (karena data terurut terbaru->terlama)
-//   2. Untuk tiap order hasil scan, GET /order/view-detail-owner/:unique_id
-//   3. Hanya order dengan expedition === "kurir - kurir food" yang dikembalikan
-//   4. Jika query "phone" diisi, filter tambahan by nomor HP driver
-// ─────────────────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════
-// FINAL: ENDPOINT DRIVER REPORT (dengan filter expedition)
-// ═══════════════════════════════════════════════════════════════
+
 app.get('/api/driver/report', async (req, res) => {
     try {
         const app_uid = req.query.app_uid || DEFAULT_UNIQUE_ID;
@@ -2278,6 +2254,402 @@ app.get('/api/master/courier', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
+
+// ═══════════════════════════════════════════════════════════════
+// ENDPOINT: AMBIL DATA TIPS DARI CUSTOMER KE DRIVER
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/driver/tips', async (req, res) => {
+    try {
+        const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
+        const driverUsername = req.query.driver_username || null; // optional filter
+
+        console.log(`💰 [driver/tips] unique_id=${unique_id}, driver=${driverUsername || 'semua'}`);
+
+        // ── Ambil semua halaman tanpa paginate ──
+        const allTransactions = await fetchAllBalanceTransactions(unique_id);
+
+        // ── Filter category 14 (Tips) ──
+        const tipsTransactions = allTransactions.filter(t => t.category === 14);
+
+        // ── Grouping berdasarkan order_no ──
+        // Setiap tips biasanya berpasangan (+ untuk customer, - untuk driver)
+        // Kita ambil yang amount positif (tips dari customer)
+        const tipsReceived = tipsTransactions
+            .filter(t => t.amount > 0)
+            .map(t => ({
+                ...t,
+                amount: Math.abs(t.amount),
+            }));
+
+        // ── Filter by driver username (jika ada) ──
+        const filteredTips = driverUsername
+            ? tipsReceived.filter(t => t.username === driverUsername)
+            : tipsReceived;
+
+        // ── Hitung total tips ──
+        const totalTips = filteredTips.reduce((sum, t) => sum + t.amount, 0);
+
+        // ── Group by order_no ──
+        const tipsByOrder = {};
+        filteredTips.forEach(t => {
+            const key = t.order_no || 'unknown';
+            if (!tipsByOrder[key]) {
+                tipsByOrder[key] = {
+                    order_no: key,
+                    total_amount: 0,
+                    transactions: [],
+                    created_at: t.creation_date,
+                };
+            }
+            tipsByOrder[key].total_amount += t.amount;
+            tipsByOrder[key].transactions.push(t);
+        });
+
+        const tipsByOrderArray = Object.values(tipsByOrder)
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+        // ── Ringkasan per driver ──
+        const summaryByDriver = {};
+        filteredTips.forEach(t => {
+            const key = t.username || 'unknown';
+            if (!summaryByDriver[key]) {
+                summaryByDriver[key] = {
+                    username: key,
+                    total_tips: 0,
+                    total_orders: 0,
+                    orders: new Set(),
+                };
+            }
+            summaryByDriver[key].total_tips += t.amount;
+            summaryByDriver[key].orders.add(t.order_no);
+        });
+
+        const summaryByDriverArray = Object.values(summaryByDriver).map(s => ({
+            ...s,
+            total_orders: s.orders.size,
+        })).sort((a, b) => b.total_tips - a.total_tips);
+
+        res.json({
+            success: true,
+            unique_id,
+            filter: {
+                driver_username: driverUsername,
+                category: 14,
+            },
+            summary: {
+                total_transactions: filteredTips.length,
+                total_tips: totalTips,
+                total_unique_orders: Object.keys(tipsByOrder).length,
+                total_drivers: summaryByDriverArray.length,
+            },
+            summary_by_driver: summaryByDriverArray,
+            tips_by_order: tipsByOrderArray,
+            data: filteredTips,
+        });
+
+    } catch (err) {
+        console.error('❌ [driver/tips]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// FUNGSI: AMBIL SEMUA TRANSAKSI BALANCE (TANPA PAGINATE)
+// ═══════════════════════════════════════════════════════════════
+async function fetchAllBalanceTransactions(unique_id) {
+    const url = 'https://app.jagel.id/api/myapp/balance-report-transaction';
+    const allData = [];
+    let currentPage = 1;
+    let lastPage = null;
+
+    console.log(`🌐 Fetch balance transactions (page 1...)`);
+
+    try {
+        while (true) {
+            const response = await axios.post(
+                url,
+                {
+                    unique_id: unique_id,
+                    paginate: 100, // ambil banyak per halaman untuk mengurangi request
+                    page: currentPage,
+                },
+                {
+                    headers: jagelHeaders,
+                }
+            );
+
+            if (!response.data || !response.data.success) {
+                throw new Error(response.data?.message || 'Balance API error');
+            }
+
+            const pageData = response.data.data;
+            const items = pageData.data || [];
+
+            if (items.length === 0) {
+                break;
+            }
+
+            allData.push(...items);
+
+            // Cek apakah ini halaman terakhir
+            lastPage = pageData.last_page || 0;
+            if (currentPage >= lastPage) {
+                break;
+            }
+
+            currentPage++;
+
+            // Optional: delay kecil agar tidak terlalu spam
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        console.log(`✅ Total ${allData.length} transaksi balance diambil dari ${currentPage} halaman`);
+        return allData;
+
+    } catch (err) {
+        console.error('❌ Gagal fetch balance transactions:', err.message);
+        throw err;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ATAU VERSI DENGAN PAGINATE DINAMIS (PILIHAN)
+// ═══════════════════════════════════════════════════════════════
+async function fetchAllBalanceTransactionsWithDynamicPage(unique_id) {
+    const url = 'https://app.jagel.id/api/myapp/balance-report-transaction';
+    const allData = [];
+    let currentPage = 1;
+    let lastPage = null;
+    const perPage = 100; // maksimal per halaman
+
+    console.log(`🌐 Fetch balance transactions (dynamic pagination)...`);
+
+    try {
+        // Ambil halaman pertama untuk mengetahui total halaman
+        const firstResponse = await axios.post(
+            url,
+            {
+                unique_id: unique_id,
+                paginate: perPage,
+                page: 1,
+            },
+            {
+                headers: jagelHeaders,
+            }
+        );
+
+        if (!firstResponse.data || !firstResponse.data.success) {
+            throw new Error(firstResponse.data?.message || 'Balance API error');
+        }
+
+        const firstPageData = firstResponse.data.data;
+        const items = firstPageData.data || [];
+        allData.push(...items);
+
+        lastPage = firstPageData.last_page || 1;
+
+        console.log(`📄 Total halaman: ${lastPage}, total item: ${firstPageData.total || 0}`);
+
+        // Ambil halaman berikutnya secara paralel (dengan batas)
+        if (lastPage > 1) {
+            const pagePromises = [];
+            for (let page = 2; page <= lastPage; page++) {
+                pagePromises.push(
+                    axios.post(
+                        url,
+                        {
+                            unique_id: unique_id,
+                            paginate: perPage,
+                            page: page,
+                        },
+                        {
+                            headers: jagelHeaders,
+                        }
+                    ).then(res => res.data)
+                );
+            }
+
+            // Eksekusi paralel dengan batasan
+            const batchSize = 10; // maksimal 10 request paralel
+            for (let i = 0; i < pagePromises.length; i += batchSize) {
+                const batch = pagePromises.slice(i, i + batchSize);
+                const results = await Promise.all(batch);
+                results.forEach(result => {
+                    if (result.success && result.data?.data) {
+                        allData.push(...result.data.data);
+                    }
+                });
+                console.log(`📄 Halaman ${i + 2} - ${Math.min(i + batchSize, pagePromises.length) + 1} selesai`);
+            }
+        }
+
+        console.log(`✅ Total ${allData.length} transaksi balance diambil dari ${lastPage} halaman`);
+        return allData;
+
+    } catch (err) {
+        console.error('❌ Gagal fetch balance transactions:', err.message);
+        throw err;
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ENDPOINT: TIPS + INTEGRASI DENGAN ORDER DETAIL
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/driver/tips-with-orders', async (req, res) => {
+    try {
+        const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
+        const driverPhone = req.query.phone || null;
+        const dateFrom = req.query.date_from || null;
+        const dateTo = req.query.date_to || null;
+
+        console.log(`💰 [driver/tips-with-orders] unique_id=${unique_id}`);
+
+        // ── Ambil semua transaksi balance ──
+        const allTransactions = await fetchAllBalanceTransactions(unique_id);
+
+        // ── Filter category 14 (Tips) ──
+        const tipsTransactions = allTransactions
+            .filter(t => t.category === 14 && t.amount > 0);
+
+        // ── Ambil detail order untuk setiap tips ──
+        const tipsWithOrderDetail = await Promise.all(
+            tipsTransactions.map(async (tip) => {
+                try {
+                    if (!tip.order_no) {
+                        return { ...tip, order_detail: null };
+                    }
+
+                    // Cari order detail berdasarkan order_no
+                    const orderDetail = await fetchOrderDetailByOrderNo(tip.order_no);
+                    return { ...tip, order_detail: orderDetail };
+                } catch (err) {
+                    console.warn(`⚠️ Gagal ambil detail order ${tip.order_no}: ${err.message}`);
+                    return { ...tip, order_detail: null };
+                }
+            })
+        );
+
+        // ── Filter by driver phone jika ada ──
+        let filtered = tipsWithOrderDetail;
+        if (driverPhone) {
+            filtered = filtered.filter(t => {
+                const driverPhoneInOrder = t.order_detail?.driver_phone || t.order_detail?.driver?.phone || '';
+                return driverPhoneInOrder.includes(driverPhone);
+            });
+        }
+
+        // ── Filter by date jika ada ──
+        if (dateFrom) {
+            filtered = filtered.filter(t => t.creation_date >= dateFrom);
+        }
+        if (dateTo) {
+            filtered = filtered.filter(t => t.creation_date <= dateTo);
+        }
+
+        // ── Hitung total tips ──
+        const totalTips = filtered.reduce((sum, t) => sum + t.amount, 0);
+
+        // ── Group by order_no ──
+        const tipsByOrder = {};
+        filtered.forEach(t => {
+            const key = t.order_no || 'unknown';
+            if (!tipsByOrder[key]) {
+                tipsByOrder[key] = {
+                    order_no: key,
+                    total_amount: 0,
+                    transactions: [],
+                    created_at: t.creation_date,
+                    order_detail: t.order_detail,
+                };
+            }
+            tipsByOrder[key].total_amount += t.amount;
+            tipsByOrder[key].transactions.push(t);
+        });
+
+        const tipsByOrderArray = Object.values(tipsByOrder)
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+        // ── Ringkasan per driver ──
+        const summaryByDriver = {};
+        filtered.forEach(t => {
+            const driverName = t.order_detail?.driver?.name || t.order_detail?.driver_name || t.username || 'unknown';
+            const driverPhone = t.order_detail?.driver?.phone || t.order_detail?.driver_phone || '';
+            const key = driverPhone || driverName;
+
+            if (!summaryByDriver[key]) {
+                summaryByDriver[key] = {
+                    driver_name: driverName,
+                    driver_phone: driverPhone,
+                    total_tips: 0,
+                    total_orders: 0,
+                    orders: new Set(),
+                };
+            }
+            summaryByDriver[key].total_tips += t.amount;
+            summaryByDriver[key].orders.add(t.order_no);
+        });
+
+        const summaryByDriverArray = Object.values(summaryByDriver).map(s => ({
+            ...s,
+            total_orders: s.orders.size,
+        })).sort((a, b) => b.total_tips - a.total_tips);
+
+        res.json({
+            success: true,
+            unique_id,
+            filter: {
+                driver_phone: driverPhone,
+                date_from: dateFrom,
+                date_to: dateTo,
+            },
+            summary: {
+                total_transactions: filtered.length,
+                total_tips: totalTips,
+                total_unique_orders: Object.keys(tipsByOrder).length,
+                total_drivers: summaryByDriverArray.length,
+            },
+            summary_by_driver: summaryByDriverArray,
+            tips_by_order: tipsByOrderArray,
+            data: filtered,
+        });
+
+    } catch (err) {
+        console.error('❌ [driver/tips-with-orders]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// FUNGSI: AMBIL DETAIL ORDER BERDASARKAN ORDER_NO
+// ═══════════════════════════════════════════════════════════════
+async function fetchOrderDetailByOrderNo(orderNo) {
+    // Gunakan endpoint yang sudah ada untuk ambil detail order
+    // Atau buat endpoint khusus untuk ambil berdasarkan order_no
+    try {
+        // Coba cari dari API report dengan filter order_no
+        const url = `${API_BASE}/api/driver/report/all-expedition?order_no=${orderNo}`;
+        const response = await fetch(url);
+        const json = await response.json();
+
+        if (json.success && Array.isArray(json.data) && json.data.length > 0) {
+            return json.data[0];
+        }
+
+        // Fallback: coba ambil detail langsung
+        const detailUrl = `${API_BASE}/api/driver/report/detail/${orderNo}`;
+        const detailResponse = await fetch(detailUrl);
+        const detailJson = await detailResponse.json();
+
+        if (detailJson.success) {
+            return detailJson.data;
+        }
+
+        return null;
+    } catch (err) {
+        console.warn(`⚠️ Gagal ambil detail order ${orderNo}: ${err.message}`);
+        return null;
+    }
+}
 
 
 // ─────────────────────────────────────────────────────────────
