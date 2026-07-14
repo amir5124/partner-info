@@ -27,6 +27,9 @@ const PANEN_HARI_INI_COMPONENT_UID = '240213187266a4c967075d019.51911072';
 const JADWAL_PANEN_COMPONENT_UID = '550313187266a4c96cba28072.25599401';
 const JAGEL_BASE_URL = 'https://app.jagel.id/api/v2/customer';
 const DRIVER_EXPEDITION_FILTER = 'kurir - kurir food';
+const COURIER_MASTER_CACHE_TTL_MS = 60 * 60 * 1000; // 1 jam
+let courierMasterCache = {}; // { [unique_id]: { data, cachedAt } }
+
 
 // Default koordinat
 const defaultCoords = { lat: -0.975, lng: 116.786 };
@@ -2170,6 +2173,84 @@ app.get('/api/driver/report/detail/:uniqueId', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
+
+async function fetchCourierIconAll(unique_id) {
+    const url = 'https://app.jagel.id/api/myapp/courierIcon/all';
+
+    console.log('🌐 Fetch courier master (GET):', url, { unique_id });
+
+    const response = await axios.get(url, {
+        headers: jagelHeaders,
+        params: { unique_id },
+    });
+
+    if (!response.data || !response.data.success) {
+        throw new Error(response.data?.message || 'CourierIcon API error');
+    }
+
+    return response.data.data;
+}
+
+// ─────────────────────────────────────────────────────────────
+// ENDPOINT: GET /api/master/courier
+// Query params:
+//   - unique_id  (opsional, default: DEFAULT_UNIQUE_ID)
+//   - refresh    (opsional, '1' -> paksa ambil ulang dari jagel,
+//                 lewati cache)
+//
+// Response ditambahkan field icon_url (URL gambar icon yang siap
+// dipakai langsung di <img src="...">), karena field "icon" asli
+// dari jagel cuma path relatif (contoh: "v/LinkU-0-...png").
+// ─────────────────────────────────────────────────────────────
+const JAGEL_ASSET_BASE = 'https://app.jagel.id/storage'; // sesuaikan kalau base URL asset jagel berbeda
+
+app.get('/api/master/courier', async (req, res) => {
+    try {
+        const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
+        const forceRefresh = req.query.refresh === '1';
+
+        const cached = courierMasterCache[unique_id];
+        const isCacheValid = cached && (Date.now() - cached.cachedAt) < COURIER_MASTER_CACHE_TTL_MS;
+
+        let rawData;
+
+        if (isCacheValid && !forceRefresh) {
+            console.log(`⚡ [master/courier] Pakai cache untuk unique_id=${unique_id}`);
+            rawData = cached.data;
+        } else {
+            rawData = await fetchCourierIconAll(unique_id);
+            courierMasterCache[unique_id] = { data: rawData, cachedAt: Date.now() };
+            console.log(`✅ [master/courier] Cache diperbarui untuk unique_id=${unique_id} (${rawData.length} jenis kurir)`);
+        }
+
+        // Bersihkan entri "=================" (placeholder/separator yang sengaja
+        // dikosongkan di data master jagel, courrier_type 20 & 23 pada contoh)
+        const data = rawData
+            .filter(c => c.name && !/^=+$/.test(c.name.trim()))
+            .map(c => ({
+                courrier_type: c.courrier_type,
+                name: c.name,
+                operator: c.operator,
+                commission: c.commission,
+                avoid_tolls: c.avoid_tolls === 1,
+                icon: c.icon,
+                icon_url: c.icon ? `${JAGEL_ASSET_BASE}/${c.icon}` : null,
+            }));
+
+        res.json({
+            success: true,
+            unique_id,
+            cached: isCacheValid && !forceRefresh,
+            total: data.length,
+            data,
+        });
+
+    } catch (err) {
+        console.error('❌ [master/courier]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 
 // ─────────────────────────────────────────────────────────────
 // START SERVER
