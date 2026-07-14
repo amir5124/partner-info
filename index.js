@@ -28,6 +28,7 @@ const JADWAL_PANEN_COMPONENT_UID = '550313187266a4c96cba28072.25599401';
 const JAGEL_BASE_URL = 'https://app.jagel.id/api/v2/customer';
 const DRIVER_EXPEDITION_FILTER = 'kurir - kurir food';
 const COURIER_MASTER_CACHE_TTL_MS = 60 * 60 * 1000; // 1 jam
+const JAGEL_ASSET_BASE = 'https://app.jagel.id/storage';
 let courierMasterCache = {}; // { [unique_id]: { data, cachedAt } }
 
 
@@ -1838,6 +1839,9 @@ function extractDistanceInfo(detail) {
 //   3. Hanya order dengan expedition === "kurir - kurir food" yang dikembalikan
 //   4. Jika query "phone" diisi, filter tambahan by nomor HP driver
 // ─────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// FINAL: ENDPOINT DRIVER REPORT (dengan filter expedition)
+// ═══════════════════════════════════════════════════════════════
 app.get('/api/driver/report', async (req, res) => {
     try {
         const app_uid = req.query.app_uid || DEFAULT_UNIQUE_ID;
@@ -1871,7 +1875,7 @@ app.get('/api/driver/report', async (req, res) => {
             pagesScanned = scanResult.pagesScanned;
         }
 
-        // 2. Ambil detail tiap order secara batch (biar tidak membanjiri API jagel)
+        // Ambil detail tiap order secara batch (biar tidak membanjiri API jagel)
         const batches = chunk(driverList, BATCH_SIZE);
         const enrichedResults = [];
 
@@ -1888,7 +1892,7 @@ app.get('/api/driver/report', async (req, res) => {
             enrichedResults.push(...batchResults);
         }
 
-        // 3. Filter hanya expedition = "kurir - kurir food"
+        // Filter hanya expedition = "kurir - kurir food"
         let filtered = enrichedResults
             .filter(r => r.ok)
             .filter(r => {
@@ -1897,7 +1901,7 @@ app.get('/api/driver/report', async (req, res) => {
                     && expedition.toLowerCase() === DRIVER_EXPEDITION_FILTER.toLowerCase();
             });
 
-        // 4. Filter tambahan by phone (kalau diminta frontend)
+        // Filter tambahan by phone (kalau diminta frontend)
         if (phoneFilter) {
             filtered = filtered.filter(r => {
                 const phone = extractDriverPhone(r.detail);
@@ -1915,6 +1919,7 @@ app.get('/api/driver/report', async (req, res) => {
                 total_price: r.item.total_price,
                 currency: r.item.currency,
                 expedition: extractExpedition(r.detail),
+                courrier_type: r.detail?.courrier_type ?? null,   // ← BARU: dipakai untuk cocokkan ke /api/master/courier
                 driver_phone: extractDriverPhone(r.detail),
                 driver_info: extractDriverInfo(r.detail),
                 distance_meters: distanceInfo.distance_meters,
@@ -1988,17 +1993,8 @@ app.get('/api/driver/report', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// TAMBAHAN: ENDPOINT DRIVER REPORT — TANPA FILTER EXPEDITION
-// Sama seperti /api/driver/report, tapi TIDAK memfilter berdasarkan
-// jenis kurir (expedition). Semua jenis ekspedisi akan ikut tampil.
-// Cara pakai: tempel di server.js, SETELAH endpoint /api/driver/report
-// yang sudah ada (supaya semua helper function di atasnya bisa dipakai:
-// fetchDriverReportList, fetchAllDriverOrdersForDate, fetchDriverOrderDetail,
-// extractExpedition, extractDriverPhone, extractDriverInfo,
-// extractDistanceInfo, chunk, BATCH_SIZE, DEFAULT_UNIQUE_ID,
-// getJakartaDateString)
+// FINAL: ENDPOINT DRIVER REPORT — TANPA FILTER EXPEDITION
 // ═══════════════════════════════════════════════════════════════
-
 app.get('/api/driver/report/all-expedition', async (req, res) => {
     try {
         const app_uid = req.query.app_uid || DEFAULT_UNIQUE_ID;
@@ -2071,6 +2067,7 @@ app.get('/api/driver/report/all-expedition', async (req, res) => {
                 total_price: r.item.total_price,
                 currency: r.item.currency,
                 expedition: extractExpedition(r.detail), // tetap ditampilkan, hanya tidak dipakai untuk filter
+                courrier_type: r.detail?.courrier_type ?? null,   // ← BARU: dipakai untuk cocokkan ke /api/master/courier
                 driver_phone: extractDriverPhone(r.detail),
                 driver_info: extractDriverInfo(r.detail),
                 distance_meters: distanceInfo.distance_meters,
@@ -2152,24 +2149,67 @@ app.get('/api/driver/report/all-expedition', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────
-// ENDPOINT: GET /api/driver/report/detail/:uniqueId
-// Ambil detail 1 order driver langsung (tanpa filter apapun),
-// berguna untuk debugging / cek struktur field asli dari jagel.
-// ─────────────────────────────────────────────────────────────
-app.get('/api/driver/report/detail/:uniqueId', async (req, res) => {
+
+async function fetchCourierIconAll(unique_id) {
+    const url = 'https://app.jagel.id/api/myapp/courierIcon/all';
+
+    console.log('🌐 Fetch courier master (GET):', url, { unique_id });
+
+    const response = await axios.get(url, {
+        headers: jagelHeaders,
+        params: { unique_id },
+    });
+
+    if (!response.data || !response.data.success) {
+        throw new Error(response.data?.message || 'CourierIcon API error');
+    }
+
+    return response.data.data;
+}
+
+app.get('/api/master/courier', async (req, res) => {
     try {
-        const { uniqueId } = req.params;
-        const detail = await fetchDriverOrderDetail(uniqueId);
+        const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
+        const forceRefresh = req.query.refresh === '1';
+
+        const cached = courierMasterCache[unique_id];
+        const isCacheValid = cached && (Date.now() - cached.cachedAt) < COURIER_MASTER_CACHE_TTL_MS;
+
+        let rawData;
+
+        if (isCacheValid && !forceRefresh) {
+            console.log(`⚡ [master/courier] Pakai cache untuk unique_id=${unique_id}`);
+            rawData = cached.data;
+        } else {
+            rawData = await fetchCourierIconAll(unique_id);
+            courierMasterCache[unique_id] = { data: rawData, cachedAt: Date.now() };
+            console.log(`✅ [master/courier] Cache diperbarui untuk unique_id=${unique_id} (${rawData.length} jenis kurir)`);
+        }
+
+        // Bersihkan entri "=================" (placeholder/separator yang sengaja
+        // dikosongkan di data master jagel, courrier_type 20 & 23 pada contoh)
+        const data = rawData
+            .filter(c => c.name && !/^=+$/.test(c.name.trim()))
+            .map(c => ({
+                courrier_type: c.courrier_type,
+                name: c.name,
+                operator: c.operator,
+                commission: c.commission,
+                avoid_tolls: c.avoid_tolls === 1,
+                icon: c.icon,
+                icon_url: c.icon ? `${JAGEL_ASSET_BASE}/${c.icon}` : null,
+            }));
 
         res.json({
             success: true,
-            expedition: extractExpedition(detail),
-            driver_phone: extractDriverPhone(detail),
-            data: detail
+            unique_id,
+            cached: isCacheValid && !forceRefresh,
+            total: data.length,
+            data,
         });
+
     } catch (err) {
-        console.error('❌ [driver/report/detail]', err.message);
+        console.error('❌ [master/courier]', err.message);
         res.status(500).json({ success: false, error: err.message });
     }
 });
@@ -2191,18 +2231,6 @@ async function fetchCourierIconAll(unique_id) {
     return response.data.data;
 }
 
-// ─────────────────────────────────────────────────────────────
-// ENDPOINT: GET /api/master/courier
-// Query params:
-//   - unique_id  (opsional, default: DEFAULT_UNIQUE_ID)
-//   - refresh    (opsional, '1' -> paksa ambil ulang dari jagel,
-//                 lewati cache)
-//
-// Response ditambahkan field icon_url (URL gambar icon yang siap
-// dipakai langsung di <img src="...">), karena field "icon" asli
-// dari jagel cuma path relatif (contoh: "v/LinkU-0-...png").
-// ─────────────────────────────────────────────────────────────
-const JAGEL_ASSET_BASE = 'https://app.jagel.id/storage'; // sesuaikan kalau base URL asset jagel berbeda
 
 app.get('/api/master/courier', async (req, res) => {
     try {
