@@ -2354,6 +2354,106 @@ app.get('/api/driver/tips', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
+// ENDPOINT: KOMISI DRIVER (category 1) — data ASLI dari jagel,
+// bukan estimasi shipping × persen komisi.
+// Pola sama seperti /api/driver/tips, cuma category-nya beda.
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/driver/commission', async (req, res) => {
+    try {
+        const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
+        const driverUsername = req.query.driver_username || null; // optional filter
+
+        console.log(`💸 [driver/commission] unique_id=${unique_id}, driver=${driverUsername || 'semua'}`);
+
+        // ── Ambil semua halaman (fetchAllBalanceTransactions sudah looping
+        //    berdasarkan last_page dari response, jadi otomatis sampai
+        //    halaman terakhir walau per_page dari server selalu 10) ──
+        const allTransactions = await fetchAllBalanceTransactions(unique_id);
+
+        // ── Filter category 1 (Komisi Driver) ──
+        const commissionTransactions = allTransactions.filter(t => t.category === 1);
+
+        // ── Entri milik driver sendiri selalu amount NEGATIF
+        //    (uang keluar dari saldo driver ke platform / appaycenter) ──
+        const commissionDeducted = commissionTransactions
+            .filter(t => t.amount < 0)
+            .map(t => ({
+                ...t,
+                amount: Math.abs(t.amount),
+            }));
+
+        // ── Filter by driver username (jika ada) ──
+        const filteredCommission = driverUsername
+            ? commissionDeducted.filter(t => t.username === driverUsername)
+            : commissionDeducted;
+
+        // ── Hitung total komisi ──
+        const totalCommission = filteredCommission.reduce((sum, t) => sum + t.amount, 0);
+
+        // ── Group by order_no ──
+        const commissionByOrder = {};
+        filteredCommission.forEach(t => {
+            const key = t.order_no || 'unknown';
+            if (!commissionByOrder[key]) {
+                commissionByOrder[key] = {
+                    order_no: key,
+                    total_amount: 0,
+                    transactions: [],
+                    created_at: t.creation_date,
+                };
+            }
+            commissionByOrder[key].total_amount += t.amount;
+            commissionByOrder[key].transactions.push(t);
+        });
+
+        const commissionByOrderArray = Object.values(commissionByOrder)
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+        // ── Ringkasan per driver ──
+        const summaryByDriver = {};
+        filteredCommission.forEach(t => {
+            const key = t.username || 'unknown';
+            if (!summaryByDriver[key]) {
+                summaryByDriver[key] = {
+                    username: key,
+                    total_commission: 0,
+                    total_orders: 0,
+                    orders: new Set(),
+                };
+            }
+            summaryByDriver[key].total_commission += t.amount;
+            summaryByDriver[key].orders.add(t.order_no);
+        });
+
+        const summaryByDriverArray = Object.values(summaryByDriver).map(s => ({
+            ...s,
+            total_orders: s.orders.size,
+        })).sort((a, b) => b.total_commission - a.total_commission);
+
+        res.json({
+            success: true,
+            unique_id,
+            filter: {
+                driver_username: driverUsername,
+                category: 1,
+            },
+            summary: {
+                total_transactions: filteredCommission.length,
+                total_commission: totalCommission,
+                total_unique_orders: Object.keys(commissionByOrder).length,
+                total_drivers: summaryByDriverArray.length,
+            },
+            summary_by_driver: summaryByDriverArray,
+            commission_by_order: commissionByOrderArray,
+            data: filteredCommission,
+        });
+
+    } catch (err) {
+        console.error('❌ [driver/commission]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+// ═══════════════════════════════════════════════════════════════
 // FUNGSI: AMBIL SEMUA TRANSAKSI BALANCE (TANPA PAGINATE)
 // ═══════════════════════════════════════════════════════════════
 async function fetchAllBalanceTransactions(unique_id) {
@@ -2651,86 +2751,6 @@ async function fetchOrderDetailByOrderNo(orderNo) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// ENDPOINT: AMBIL DATA KOMISI DRIVER DARI BALANCE TRANSACTION
-// ═══════════════════════════════════════════════════════════════
-app.get('/api/driver/commissions', async (req, res) => {
-    try {
-        const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
-        const driverUsername = req.query.driver_username || null;
-        const dateFrom = req.query.date_from || null;
-        const dateTo = req.query.date_to || null;
-
-        console.log(`💰 [driver/commissions] unique_id=${unique_id}, driver=${driverUsername || 'semua'}`);
-
-        // ── Ambil semua transaksi balance ──
-        const allTransactions = await fetchAllBalanceTransactions(unique_id);
-
-        // ── Filter category 1 (Komisi) ──
-        let commissionTransactions = allTransactions.filter(t => t.category === 1);
-
-        // ── Filter by driver username ──
-        if (driverUsername) {
-            commissionTransactions = commissionTransactions.filter(t => t.username === driverUsername);
-        }
-
-        // ── Filter by date ──
-        if (dateFrom) {
-            commissionTransactions = commissionTransactions.filter(t => t.creation_date >= dateFrom);
-        }
-        if (dateTo) {
-            commissionTransactions = commissionTransactions.filter(t => t.creation_date <= dateTo);
-        }
-
-        // ── Pisahkan positif (dari customer) dan negatif (driver) ──
-        const commissionsToDriver = commissionTransactions
-            .filter(t => t.amount < 0)
-            .map(t => ({
-                ...t,
-                amount: Math.abs(t.amount), // Ubah ke positif untuk tampilan
-            }));
-
-        const totalCommission = commissionsToDriver.reduce((sum, t) => sum + t.amount, 0);
-
-        // ── Group by order_no ──
-        const commissionsByOrder = {};
-        commissionsToDriver.forEach(t => {
-            const key = t.order_no || 'unknown';
-            if (!commissionsByOrder[key]) {
-                commissionsByOrder[key] = {
-                    order_no: key,
-                    total_amount: 0,
-                    transactions: [],
-                    created_at: t.creation_date,
-                };
-            }
-            commissionsByOrder[key].total_amount += t.amount;
-            commissionsByOrder[key].transactions.push(t);
-        });
-
-        res.json({
-            success: true,
-            unique_id,
-            filter: {
-                driver_username: driverUsername,
-                date_from: dateFrom,
-                date_to: dateTo,
-            },
-            summary: {
-                total_transactions: commissionsToDriver.length,
-                total_commission: totalCommission,
-                total_unique_orders: Object.keys(commissionsByOrder).length,
-            },
-            commissions_by_order: Object.values(commissionsByOrder)
-                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at)),
-            data: commissionsToDriver,
-        });
-
-    } catch (err) {
-        console.error('❌ [driver/commissions]', err.message);
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
 
 // ─────────────────────────────────────────────────────────────
 // START SERVER
