@@ -2720,28 +2720,65 @@ app.get('/api/driver/tips-with-orders', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// FUNGSI: AMBIL DETAIL ORDER BERDASARKAN ORDER_NO
+// ENDPOINT: GET DETAIL ORDER (untuk tampilan "Detail Rute Order"
+// di frontend laporan-driver.html)
+//
+// Reuse fetchDriverOrderDetail() yang sudah ada & terbukti jalan
+// (dipakai juga di /api/driver/report dan /api/driver/report/all-expedition).
+// Taruh route ini di dekat endpoint driver lain, SETELAH fungsi
+// fetchDriverOrderDetail(uniqueId) didefinisikan.
 // ═══════════════════════════════════════════════════════════════
-async function fetchOrderDetailByOrderNo(orderNo) {
-    // Gunakan endpoint yang sudah ada untuk ambil detail order
-    // Atau buat endpoint khusus untuk ambil berdasarkan order_no
+app.get('/api/driver/order-route/:uniqueId', async (req, res) => {
     try {
-        // Coba cari dari API report dengan filter order_no
-        const url = `${API_BASE}/api/driver/report/all-expedition?order_no=${orderNo}`;
-        const response = await fetch(url);
-        const json = await response.json();
+        const { uniqueId } = req.params;
 
-        if (json.success && Array.isArray(json.data) && json.data.length > 0) {
-            return json.data[0];
-        }
+        console.log(`🗺️ [driver/order-route] unique_id=${uniqueId}`);
 
-        // Fallback: coba ambil detail langsung
-        const detailUrl = `${API_BASE}/api/driver/report/detail/${orderNo}`;
-        const detailResponse = await fetch(detailUrl);
-        const detailJson = await detailResponse.json();
+        const detail = await fetchDriverOrderDetail(uniqueId);
 
-        if (detailJson.success) {
-            return detailJson.data;
+        res.json({
+            success: true,
+            data: detail, // berisi order_no, lines[] (origin/destination/distance), dll
+        });
+
+    } catch (err) {
+        console.error('❌ [driver/order-route]', err.message);
+        res.status(502).json({ success: false, error: err.message });
+    }
+});
+
+
+// ═══════════════════════════════════════════════════════════════
+// BONUS (opsional): PERBAIKAN fetchOrderDetailByOrderNo
+//
+// Fungsi versi lama di bagian bawah file Anda punya 2 bug:
+//   1. Memakai `API_BASE` yang TIDAK PERNAH didefinisikan di file
+//      backend ini (cuma ada di file HTML front-end) -> akan
+//      throw ReferenceError kalau benar-benar dipanggil.
+//   2. Endpoint /api/driver/report/all-expedition TIDAK membaca
+//      query param `order_no` sama sekali (cek definisinya —
+//      cuma baca app_uid, phone, date, page, paginate). Jadi
+//      filter `?order_no=${orderNo}` itu diam-diam tidak ngefek,
+//      dan `json.data[0]` yang dikembalikan bisa jadi order yang
+//      SALAH (order pertama di hasil list, bukan yang dicari).
+//
+// Fungsi ini dipakai di /api/driver/tips-with-orders — kalau
+// endpoint itu Anda pakai, sebaiknya diganti dengan versi ini:
+// ═══════════════════════════════════════════════════════════════
+async function fetchOrderDetailByOrderNo(orderNo, { maxDaysBack = 7 } = {}) {
+    try {
+        // all-expedition tidak support filter order_no di server, jadi kita
+        // scan per-tanggal (dari hari ini mundur beberapa hari) dan cari
+        // order_no yang cocok secara manual.
+        for (let dayOffset = 0; dayOffset <= maxDaysBack; dayOffset++) {
+            const targetDate = getJakartaDateString(-dayOffset);
+            const scanResult = await fetchAllDriverOrdersForDate({ targetDate });
+            const found = scanResult.items.find(item => item.order_no === orderNo);
+
+            if (found) {
+                const detail = await fetchDriverOrderDetail(found.unique_id);
+                return { ...found, ...detail };
+            }
         }
 
         return null;
@@ -2750,7 +2787,6 @@ async function fetchOrderDetailByOrderNo(orderNo) {
         return null;
     }
 }
-
 
 // ─────────────────────────────────────────────────────────────
 // START SERVER
