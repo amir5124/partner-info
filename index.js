@@ -13,15 +13,26 @@ app.use(express.static('public'));
 // ─────────────────────────────────────────────────────────────
 // KONFIGURASI DATABASE
 // ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// KONFIGURASI DATABASE (untuk server ufood.siappgo.id)
+// ─────────────────────────────────────────────────────────────
+
+// 🔥 Gunakan konfigurasi DATABASE BONUS yang asli
+// Karena bonus.siappgo.id dan ufood.siappgo.id adalah 2 server berbeda,
+// tapi keduanya mengakses database yang SAMA (database bonus)
 const pool = mysql.createPool({
-    host: process.env.DB_HOST || 'localhost',
+    host: process.env.DB_HOST || 'c40sk40kc044440gc08s0swo',
     user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'linku_bonus',
+    password: process.env.DB_PASSWORD || 'Uk62UEtopsORTE7ZsQeZIS1qydlVikTMYeeNlqm65f6qhTBRNMT33JtzNv8QyrNU',
+    database: process.env.DB_NAME || 'bonus',
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
 });
+
+console.log('✅ Database bonus terhubung');
+console.log(`📊 Host: ${process.env.DB_HOST || 'c40sk40kc044440gc08s0swo'}`);
+console.log(`📊 Database: ${process.env.DB_NAME || 'bonus'}`);
 
 // ─────────────────────────────────────────────────────────────
 // KONFIGURASI JAGEL
