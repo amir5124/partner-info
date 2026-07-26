@@ -617,6 +617,141 @@ const bonusModel = new BonusBbm();
 // ════════════════════════════════════════════════════════════
 // ─────────────────────────────────────────────────────────────
 
+// ── 🔥 POST /api/driver/bonus/auto-insert ──
+// ENDPOINT KHUSUS UNTUK AUTO INSERT BONUS DARI FRONTEND
+app.post('/api/driver/bonus/auto-insert', async (req, res) => {
+    console.log('═'.repeat(60));
+    console.log('📦 [AUTO-INSERT] Request received from frontend');
+    console.log('═'.repeat(60));
+
+    try {
+        const { orders } = req.body;
+
+        if (!orders || !Array.isArray(orders) || orders.length === 0) {
+            console.log('❌ [AUTO-INSERT] No orders provided');
+            return res.status(400).json({
+                success: false,
+                message: 'orders array is required'
+            });
+        }
+
+        console.log(`📋 [AUTO-INSERT] Processing ${orders.length} orders`);
+
+        let processed = 0;
+        let skipped = 0;
+        let errors = 0;
+        const results = [];
+
+        for (const order of orders) {
+            const orderNo = order.order_no;
+            const username = order.driver_username || DRIVER_USERNAME;
+            const distance = parseFloat(order.distance_km) || 0;
+            const isFood = order.expedition && 
+                          order.expedition.toLowerCase().includes('kurir food');
+
+            console.log(`🔄 [AUTO-INSERT] Processing order: ${orderNo}`);
+
+            // Validasi syarat
+            if (!isFood) {
+                console.log(`⏭️ [AUTO-INSERT] ${orderNo} not food order`);
+                skipped++;
+                results.push({
+                    order_no: orderNo,
+                    status: 'skipped',
+                    message: 'Not a food order'
+                });
+                continue;
+            }
+
+            if (distance < 3) {
+                console.log(`⏭️ [AUTO-INSERT] ${orderNo} distance ${distance}km < 3km`);
+                skipped++;
+                results.push({
+                    order_no: orderNo,
+                    status: 'skipped',
+                    message: `Distance ${distance}km < 3km`
+                });
+                continue;
+            }
+
+            // Cek apakah sudah ada bonus
+            const hasBonus = await bonusModel.hasOrderBonus(orderNo, username);
+            if (hasBonus) {
+                console.log(`⏭️ [AUTO-INSERT] ${orderNo} already has bonus`);
+                skipped++;
+                results.push({
+                    order_no: orderNo,
+                    status: 'skipped',
+                    message: 'Already has bonus'
+                });
+                continue;
+            }
+
+            // Proses bonus
+            try {
+                console.log(`✅ [AUTO-INSERT] Creating bonus for ${orderNo}`);
+                const bonusResult = await bonusModel.processAutoBonus({
+                    driver_username: username,
+                    driver_phone: order.driver_phone || DRIVER_PHONE,
+                    order_no: orderNo,
+                    distance_km: distance,
+                    creation_date: order.creation_date || new Date().toISOString(),
+                    total_price: parseFloat(order.total_price) || 0,
+                    unique_id: order.unique_id || null,
+                });
+
+                if (bonusResult.success && bonusResult.new_bonuses && bonusResult.new_bonuses.length > 0) {
+                    processed++;
+                    results.push({
+                        order_no: orderNo,
+                        status: 'success',
+                        bonus: bonusResult.new_bonuses
+                    });
+                    console.log(`✅ [AUTO-INSERT] Bonus created for ${orderNo}`);
+                } else {
+                    skipped++;
+                    results.push({
+                        order_no: orderNo,
+                        status: 'skipped',
+                        message: bonusResult.message || 'No new bonus created'
+                    });
+                    console.log(`⏭️ [AUTO-INSERT] ${orderNo}: ${bonusResult.message || 'No new bonus'}`);
+                }
+            } catch (err) {
+                errors++;
+                results.push({
+                    order_no: orderNo,
+                    status: 'error',
+                    message: err.message
+                });
+                console.error(`❌ [AUTO-INSERT] Error for ${orderNo}:`, err);
+            }
+        }
+
+        console.log('═'.repeat(60));
+        console.log(`📊 [AUTO-INSERT] Summary: ${processed} created, ${skipped} skipped, ${errors} errors`);
+        console.log('═'.repeat(60));
+
+        res.json({
+            success: true,
+            summary: {
+                total_orders: orders.length,
+                processed: processed,
+                skipped: skipped,
+                errors: errors
+            },
+            results: results
+        });
+
+    } catch (error) {
+        console.error('❌ [AUTO-INSERT] Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Internal server error'
+        });
+    }
+});
+
 // ── POST /api/driver/order/complete ──
 app.post('/api/driver/order/complete', async (req, res) => {
     console.log('═'.repeat(60));
@@ -1402,6 +1537,7 @@ app.listen(PORT, () => {
     console.log(`\n🚀 Server berjalan di port ${PORT}`);
     console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     console.log(`📡 BONUS ENDPOINTS:`);
+    console.log(`  POST /api/driver/bonus/auto-insert - 🔥 AUTO INSERT dari frontend`);
     console.log(`  POST /api/driver/order/complete - Auto bonus saat order selesai`);
     console.log(`  GET  /api/driver/bonus/:username - Daftar bonus driver`);
     console.log(`  GET  /api/driver/bonus/detail/:id - Detail bonus`);
