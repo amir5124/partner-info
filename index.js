@@ -13,13 +13,6 @@ app.use(express.static('public'));
 // ─────────────────────────────────────────────────────────────
 // KONFIGURASI DATABASE
 // ─────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────
-// KONFIGURASI DATABASE (untuk server ufood.siappgo.id)
-// ─────────────────────────────────────────────────────────────
-
-// 🔥 Gunakan konfigurasi DATABASE BONUS yang asli
-// Karena bonus.siappgo.id dan ufood.siappgo.id adalah 2 server berbeda,
-// tapi keduanya mengakses database yang SAMA (database bonus)
 const pool = mysql.createPool({
     host: process.env.DB_HOST || 'c40sk40kc044440gc08s0swo',
     user: process.env.DB_USER || 'root',
@@ -125,6 +118,51 @@ async function jagelGet(path, params = {}) {
         throw new Error(json.message || 'Jagel API returned success=false');
     }
     return json.data;
+}
+
+// ─────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+// FUNGSI: AMBIL SEMUA TRANSAKSI BALANCE (untuk Tips & Commission)
+// ════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────
+async function fetchAllBalanceTransactions(unique_id) {
+    const url = 'https://app.jagel.id/api/myapp/balance-report-transaction';
+    const allData = [];
+    let currentPage = 1;
+    let lastPage = null;
+
+    console.log(`🌐 Fetch balance transactions (page 1...)`);
+
+    try {
+        while (true) {
+            const response = await axios.post(
+                url,
+                { unique_id: unique_id, paginate: 100, page: currentPage },
+                { headers: jagelHeaders }
+            );
+
+            if (!response.data || !response.data.success) {
+                throw new Error(response.data?.message || 'Balance API error');
+            }
+
+            const pageData = response.data.data;
+            const items = pageData.data || [];
+
+            if (items.length === 0) break;
+
+            allData.push(...items);
+            lastPage = pageData.last_page || 0;
+            if (currentPage >= lastPage) break;
+            currentPage++;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        console.log(`✅ Total ${allData.length} transaksi balance diambil`);
+        return allData;
+    } catch (err) {
+        console.error('❌ Gagal fetch balance transactions:', err.message);
+        throw err;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -948,6 +986,172 @@ app.post('/api/driver/order/retry-bonus', async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────
 // ════════════════════════════════════════════════════════════
+// 🔥 ENDPOINT: AMBIL DATA TIPS DARI CUSTOMER KE DRIVER
+// ════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────
+app.get('/api/driver/tips', async (req, res) => {
+    try {
+        const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
+        const driverUsername = req.query.driver_username || null;
+
+        console.log(`💰 [driver/tips] unique_id=${unique_id}, driver=${driverUsername || 'semua'}`);
+
+        const allTransactions = await fetchAllBalanceTransactions(unique_id);
+        const tipsTransactions = allTransactions.filter(t => t.category === 14);
+        const tipsReceived = tipsTransactions
+            .filter(t => t.amount > 0)
+            .map(t => ({ ...t, amount: Math.abs(t.amount) }));
+
+        const filteredTips = driverUsername
+            ? tipsReceived.filter(t => t.username === driverUsername)
+            : tipsReceived;
+
+        const totalTips = filteredTips.reduce((sum, t) => sum + t.amount, 0);
+
+        const tipsByOrder = {};
+        filteredTips.forEach(t => {
+            const key = t.order_no || 'unknown';
+            if (!tipsByOrder[key]) {
+                tipsByOrder[key] = {
+                    order_no: key,
+                    total_amount: 0,
+                    transactions: [],
+                    created_at: t.creation_date,
+                };
+            }
+            tipsByOrder[key].total_amount += t.amount;
+            tipsByOrder[key].transactions.push(t);
+        });
+
+        const tipsByOrderArray = Object.values(tipsByOrder)
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+        const summaryByDriver = {};
+        filteredTips.forEach(t => {
+            const key = t.username || 'unknown';
+            if (!summaryByDriver[key]) {
+                summaryByDriver[key] = {
+                    username: key,
+                    total_tips: 0,
+                    total_orders: 0,
+                    orders: new Set(),
+                };
+            }
+            summaryByDriver[key].total_tips += t.amount;
+            summaryByDriver[key].orders.add(t.order_no);
+        });
+
+        const summaryByDriverArray = Object.values(summaryByDriver).map(s => ({
+            ...s,
+            total_orders: s.orders.size,
+        })).sort((a, b) => b.total_tips - a.total_tips);
+
+        res.json({
+            success: true,
+            unique_id,
+            filter: { driver_username: driverUsername, category: 14 },
+            summary: {
+                total_transactions: filteredTips.length,
+                total_tips: totalTips,
+                total_unique_orders: Object.keys(tipsByOrder).length,
+                total_drivers: summaryByDriverArray.length,
+            },
+            summary_by_driver: summaryByDriverArray,
+            tips_by_order: tipsByOrderArray,
+            data: filteredTips,
+        });
+
+    } catch (err) {
+        console.error('❌ [driver/tips]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
+// 🔥 ENDPOINT: KOMISI DRIVER (category 1)
+// ════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────
+app.get('/api/driver/commission', async (req, res) => {
+    try {
+        const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
+        const driverUsername = req.query.driver_username || null;
+
+        console.log(`💸 [driver/commission] unique_id=${unique_id}, driver=${driverUsername || 'semua'}`);
+
+        const allTransactions = await fetchAllBalanceTransactions(unique_id);
+        const commissionTransactions = allTransactions.filter(t => t.category === 1);
+        const commissionDeducted = commissionTransactions
+            .filter(t => t.amount < 0)
+            .map(t => ({ ...t, amount: Math.abs(t.amount) }));
+
+        const filteredCommission = driverUsername
+            ? commissionDeducted.filter(t => t.username === driverUsername)
+            : commissionDeducted;
+
+        const totalCommission = filteredCommission.reduce((sum, t) => sum + t.amount, 0);
+
+        const commissionByOrder = {};
+        filteredCommission.forEach(t => {
+            const key = t.order_no || 'unknown';
+            if (!commissionByOrder[key]) {
+                commissionByOrder[key] = {
+                    order_no: key,
+                    total_amount: 0,
+                    transactions: [],
+                    created_at: t.creation_date,
+                };
+            }
+            commissionByOrder[key].total_amount += t.amount;
+            commissionByOrder[key].transactions.push(t);
+        });
+
+        const commissionByOrderArray = Object.values(commissionByOrder)
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+        const summaryByDriver = {};
+        filteredCommission.forEach(t => {
+            const key = t.username || 'unknown';
+            if (!summaryByDriver[key]) {
+                summaryByDriver[key] = {
+                    username: key,
+                    total_commission: 0,
+                    total_orders: 0,
+                    orders: new Set(),
+                };
+            }
+            summaryByDriver[key].total_commission += t.amount;
+            summaryByDriver[key].orders.add(t.order_no);
+        });
+
+        const summaryByDriverArray = Object.values(summaryByDriver).map(s => ({
+            ...s,
+            total_orders: s.orders.size,
+        })).sort((a, b) => b.total_commission - a.total_commission);
+
+        res.json({
+            success: true,
+            unique_id,
+            filter: { driver_username: driverUsername, category: 1 },
+            summary: {
+                total_transactions: filteredCommission.length,
+                total_commission: totalCommission,
+                total_unique_orders: Object.keys(commissionByOrder).length,
+                total_drivers: summaryByDriverArray.length,
+            },
+            summary_by_driver: summaryByDriverArray,
+            commission_by_order: commissionByOrderArray,
+            data: filteredCommission,
+        });
+
+    } catch (err) {
+        console.error('❌ [driver/commission]', err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ─────────────────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════
 // ENDPOINT DRIVER REPORT (EXISTING)
 // ════════════════════════════════════════════════════════════
 // ─────────────────────────────────────────────────────────────
@@ -1206,6 +1410,9 @@ app.listen(PORT, () => {
     console.log(`  GET  /api/driver/bonus/summary/:username - Summary bonus`);
     console.log(`  POST /api/driver/bonus/process-expired - Proses expired`);
     console.log(`  POST /api/driver/order/retry-bonus - Retry bonus untuk order existing`);
+    console.log(`\n📡 TIPS & COMMISSION ENDPOINTS:`);
+    console.log(`  GET /api/driver/tips?driver_username=xxx - Data tips driver`);
+    console.log(`  GET /api/driver/commission?driver_username=xxx - Data komisi driver`);
     console.log(`\n📡 DRIVER REPORT ENDPOINTS:`);
     console.log(`  GET /api/driver/report/all-expedition?date=YYYY-MM-DD&phone=...`);
     console.log(`  GET /api/driver/order-route/:uniqueId`);
