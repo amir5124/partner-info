@@ -68,6 +68,13 @@ const KM_PER_BONUS = 3;
 const BONUS_PER_BLOCK = 10000;
 
 // ─────────────────────────────────────────────────────────────
+// KONFIGURASI JAGEL API
+// ─────────────────────────────────────────────────────────────
+const CONFIG = {
+    jagelApiKey: process.env.JAGEL_APIKEY || 'c6wA9HlUkN2PYEpEOYmDwiehrw7QMIVAvPETMpR2NRN4jjnYPO',
+};
+
+// ─────────────────────────────────────────────────────────────
 // UTILITAS
 // ─────────────────────────────────────────────────────────────
 function getDistance(lat1, lon1, lat2, lon2) {
@@ -176,6 +183,7 @@ class BonusBbm {
         this.pool = pool;
         this.KM_PER_BONUS = KM_PER_BONUS;
         this.BONUS_PER_BLOCK = BONUS_PER_BLOCK;
+        this.jagelApiKey = CONFIG.jagelApiKey;
         console.log('🚀 [BONUS] BonusBbm initialized');
         console.log(`📊 [BONUS] KM per bonus: ${this.KM_PER_BONUS}km`);
         console.log(`📊 [BONUS] Bonus per block: Rp${this.BONUS_PER_BLOCK}`);
@@ -469,28 +477,41 @@ class BonusBbm {
         }));
     }
 
-    // ── ADJUST BALANCE AND NOTIFY ──
+    // ── 🔥 ADJUST BALANCE AND NOTIFY (PERBAIKAN) ──
     async _adjustBalanceAndNotify({ username, amount, note }) {
         console.log(`📤 [ADJUST-BALANCE] Starting for ${username}, Rp${amount}`);
+        console.log(`📤 [ADJUST-BALANCE] Amount type: ${typeof amount}, value: ${amount}`);
 
+        // 🔥 Pastikan amount adalah number (bukan string)
+        const numericAmount = Number(amount);
+        
+        // 🔥 Format payload sesuai dokumentasi Jagel
         const adjustPayload = {
             type: "username",
             value: username,
-            apikey: process.env.JAGEL_APIKEY || 'c6wA9HlUkN2PYEpEOYmDwiehrw7QMIVAvPETMpR2NRN4jjnYPO',
-            amount: amount,
+            apikey: this.jagelApiKey,
+            amount: numericAmount,
             adjust_balance_admin: 0,
             note: note,
         };
+
+        console.log(`📤 [ADJUST-BALANCE] Payload:`, JSON.stringify(adjustPayload, null, 2));
 
         try {
             const adjustResponse = await axios.post(
                 'https://api.jagel.id/v1/balance/adjust',
                 adjustPayload,
                 {
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    headers: { 
+                        'Content-Type': 'application/json', 
+                        'Accept': 'application/json'
+                    },
                     timeout: 30000,
                 }
             );
+
+            console.log(`✅ [ADJUST-BALANCE] Response status: ${adjustResponse.status}`);
+            console.log(`✅ [ADJUST-BALANCE] Response data:`, adjustResponse.data);
 
             if (adjustResponse.data?.success !== true) {
                 throw new Error("Adjust balance gagal: " + JSON.stringify(adjustResponse.data));
@@ -498,27 +519,38 @@ class BonusBbm {
 
             // Kirim notifikasi
             try {
-                await axios.post(
+                const msgResponse = await axios.post(
                     'https://api.jagel.id/v1/message/send',
                     {
                         type: "username",
                         value: username,
-                        apikey: process.env.JAGEL_APIKEY || 'c6wA9HlUkN2PYEpEOYmDwiehrw7QMIVAvPETMpR2NRN4jjnYPO',
+                        apikey: this.jagelApiKey,
                         content: note,
                     },
                     {
-                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                        headers: { 
+                            'Content-Type': 'application/json', 
+                            'Accept': 'application/json'
+                        },
                         timeout: 30000,
                     }
                 );
+                console.log(`✅ [ADJUST-BALANCE] Message sent:`, msgResponse.data);
             } catch (msgErr) {
                 console.error(`⚠️ Failed to send message:`, msgErr.message);
+                if (msgErr.response) {
+                    console.error(`⚠️ Message error response:`, msgErr.response.data);
+                }
             }
 
             return adjustResponse.data;
 
         } catch (error) {
             console.error(`❌ [ADJUST-BALANCE] Error:`, error.message);
+            if (error.response) {
+                console.error(`❌ [ADJUST-BALANCE] Response status: ${error.response.status}`);
+                console.error(`❌ [ADJUST-BALANCE] Response data:`, error.response.data);
+            }
             throw error;
         }
     }
@@ -558,11 +590,13 @@ class BonusBbm {
                 throw new Error('Bonus sudah expired');
             }
 
-            const amount = bonus.amount;
+            // 🔥 Pastikan amount adalah number
+            const amount = Number(bonus.amount);
             const username = bonus.driver_username.trim();
             const formattedAmount = amount.toLocaleString('id-ID');
             const note = `Bonus BBM Cair || nominal Rp. ${formattedAmount} || jarak tempuh ${bonus.achieved_km} km || Order ${bonus.order_no}`;
 
+            console.log(`📝 [CLAIM] Updating status to 'claimed'...`);
             await connection.execute(
                 `UPDATE bonus_bbm SET status = 'claimed', claimed_at = NOW() WHERE id = ?`,
                 [bonusId]
@@ -570,9 +604,13 @@ class BonusBbm {
 
             await connection.commit();
 
+            console.log(`📤 [CLAIM] Adjusting balance with Jagel API...`);
+            console.log(`📤 [CLAIM] Amount: ${amount} (${typeof amount})`);
+            
             const jagelResult = await this._adjustBalanceAndNotify({ username, amount, note });
 
             console.log(`✅ [CLAIM] Bonus claimed successfully!`);
+            console.log(`📊 [CLAIM] Jagel response:`, jagelResult);
             console.log('═'.repeat(60));
 
             return {
@@ -581,12 +619,16 @@ class BonusBbm {
                 driver_username: username,
                 amount,
                 note,
-                jagel_response: jagelResult?.data,
+                jagel_response: jagelResult,
             };
 
         } catch (error) {
             await connection.rollback();
             console.error(`❌ [CLAIM] Error:`, error.message);
+            if (error.response) {
+                console.error(`❌ [CLAIM] Response data:`, error.response.data);
+            }
+            console.log('═'.repeat(60));
             throw error;
         } finally {
             connection.release();
@@ -618,7 +660,6 @@ const bonusModel = new BonusBbm();
 // ─────────────────────────────────────────────────────────────
 
 // ── 🔥 POST /api/driver/bonus/auto-insert ──
-// ENDPOINT KHUSUS UNTUK AUTO INSERT BONUS DARI FRONTEND
 app.post('/api/driver/bonus/auto-insert', async (req, res) => {
     console.log('═'.repeat(60));
     console.log('📦 [AUTO-INSERT] Request received from frontend');
