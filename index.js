@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const mysql = require('mysql2/promise');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,32 +11,46 @@ app.use(express.json());
 app.use(express.static('public'));
 
 // ─────────────────────────────────────────────────────────────
-// KONFIGURASI
+// KONFIGURASI DATABASE
+// ─────────────────────────────────────────────────────────────
+const pool = mysql.createPool({
+    host: process.env.DB_HOST || 'c40sk40kc044440gc08s0swo',
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || 'Uk62UEtopsORTE7ZsQeZIS1qydlVikTMYeeNlqm65f6qhTBRNMT33JtzNv8QyrNU',
+    database: process.env.DB_NAME || 'bonus',
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+});
+
+console.log('✅ Database bonus terhubung');
+
+// ─────────────────────────────────────────────────────────────
+// KONFIGURASI JAGEL
 // ─────────────────────────────────────────────────────────────
 const JAGEL_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjRhNDc5ZDU2N2E4N2ZjOTljMWExZjUyZDQ0NTk3NzgyNjVjNmE1NjRjZTg3NTQ1ZDEzMjkxYmQ0YzJkZjFlZTY1NTJmMGU3NjJlMDAyOTMyIn0.eyJhdWQiOiIxIiwianRpIjoiNGE0NzlkNTY3YTg3ZmM5OWMxYTFmNTJkNDQ1OTc3ODI2NWM2YTU2NGNlODc1NDVkMTMyOTFiZDRjMmRmMWVlNjU1MmYwZTc2MmUwMDI5MzIiLCJpYXQiOjE3ODQ2ODg4MzAsIm5iZiI6MTc4NDY4ODgzMCwiZXhwIjoxODE2MjI0ODMwLCJzdWIiOiIyOTcxODQ0Iiwic2NvcGVzIjpbXX0.XrNiE7QXo53bAtTzyxQMTQjs9mUqXy7YHY4IrFqUV3rEqbs4JsbnT9dImUxXPn8iqG8QHuiGRmWWVDA1KqbrKoHNf5yeJMKIUH-lwfXRHlL4m00naghEoZRHcOZmd4_BlP_C_hQQ4pYsDAZ0-Yy3KurawzOkaAzlYprY7R_lwUROSjDjNpVbT9y65Fk-8RzjuvIItDtE6DG94HdrPD4K_wKkpzrCcSkbuGM_UNhW6O27rsWEu41HoiXcn3m_51JX0FPBSmlprAvx3xxhIY-RXUp9YJN6Zq1bbxBdEeSPRbvQJj94FGOk9fluJ8R-esJGf691OdGEYYwRlkMTzanQ5diuQJeSjENvcV88iI1DZJP3Z82onIS18hgocbN9W7nR_L-24aVhz0UZBSDcPanT8kpJz4f5EmYVd2Rnd8wKLrQ8YjBC4ffMZhk1CJpV4bRuClPJFUKrvKEHjhE1dkOSmFu8sKbt3sk2CZrBivE4e0qqXWLPWrZ2VxTf1y_2dpLhy-IMTkgm0k1diTSqqp_y6PcM-qJjSStfGnWuWxuhj503z0jGukbcfukX1E00U3qcCvf8E4RUDaO4zNOMvhgLBn_puIAoYVn4PMyQSy6LCOMNP6bGlC1k6eNRep4TTaLl3wRw0q_QqP_1n_An23k8BHlnqkuBKTiGRuRCtnssTtc";
 const CODENAME = "iknlinku";
-const JAGEL_CODENAME = 'iknlinku'; // alias, dipakai fungsi jagelGet
+const JAGEL_CODENAME = 'iknlinku';
 const BATCH_SIZE = 3;
 const DEFAULT_UNIQUE_ID = '03421121304617f701ba3b374.23310242';
 const DEFAULT_PARTNER_STATUS = '2';
 
 // Component UID
-const MAKANAN_COMPONENT_UID = '618637dbc8415';    // Jastip Makanan
-const PETANI_COMPONENT_UID = '6a48d1e936ae2';     // Petani Lokal
+const MAKANAN_COMPONENT_UID = '618637dbc8415';
+const PETANI_COMPONENT_UID = '6a48d1e936ae2';
 const PREORDER_COMPONENT_UID = '150313187266a4c96a3639b16.85140307';
 const PANEN_HARI_INI_COMPONENT_UID = '240213187266a4c967075d019.51911072';
 const JADWAL_PANEN_COMPONENT_UID = '550313187266a4c96cba28072.25599401';
 const JAGEL_BASE_URL = 'https://app.jagel.id/api/v2/customer';
 const DRIVER_EXPEDITION_FILTER = 'kurir - kurir food';
-const COURIER_MASTER_CACHE_TTL_MS = 60 * 60 * 1000; // 1 jam
+const COURIER_MASTER_CACHE_TTL_MS = 60 * 60 * 1000;
 const JAGEL_ASSET_BASE = 'https://app.jagel.id/storage';
-let courierMasterCache = {}; // { [unique_id]: { data, cachedAt } }
-
+let courierMasterCache = {};
 
 // Default koordinat
 const defaultCoords = { lat: -0.975, lng: 116.786 };
 
-// Headers untuk request ke Jagel (dipakai axios, endpoint yang butuh auth: report, users, partner)
+// Headers untuk request ke Jagel
 const jagelHeaders = {
     'User-Agent': 'Mozilla/5.0',
     'Authorization': `Bearer ${JAGEL_TOKEN}`,
@@ -45,15 +60,26 @@ const jagelHeaders = {
 };
 
 // ─────────────────────────────────────────────────────────────
+// KONFIGURASI BONUS
+// ─────────────────────────────────────────────────────────────
+const KM_PER_BONUS = 3;
+const BONUS_PER_BLOCK = 10000;
+
+// ─────────────────────────────────────────────────────────────
+// KONFIGURASI JAGEL API
+// ─────────────────────────────────────────────────────────────
+const CONFIG = {
+    jagelApiKey: process.env.JAGEL_APIKEY || 'c6wA9HlUkN2PYEpEOYmDwiehrw7QMIVAvPETMpR2NRN4jjnYPO',
+};
+
+// ─────────────────────────────────────────────────────────────
 // UTILITAS
 // ─────────────────────────────────────────────────────────────
-
 function getDistance(lat1, lon1, lat2, lon2) {
     const R = 6371;
     const dLat = ((lat2 - lat1) * Math.PI) / 180;
     const dLon = ((lon2 - lon1) * Math.PI) / 180;
-    const a =
-        Math.sin(dLat / 2) ** 2 +
+    const a = Math.sin(dLat / 2) ** 2 +
         Math.cos((lat1 * Math.PI) / 180) *
         Math.cos((lat2 * Math.PI) / 180) *
         Math.sin(dLon / 2) ** 2;
@@ -72,51 +98,16 @@ function parseUserCoords(query) {
     return (!isNaN(lat) && !isNaN(lng)) ? { lat, lng } : defaultCoords;
 }
 
-// Catatan: fungsi ini tidak dipakai di endpoint manapun saat ini
-// (stores-stream punya implementasi SSE sendiri secara inline).
-// Signature diperbaiki agar req ikut di-pass, supaya tidak crash jika dipakai nanti.
-function setupSSE(req, res) {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache, no-transform');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'Cache-Control');
-    res.setHeader('Content-Encoding', 'identity');
-
-    res.flushHeaders();
-
-    let heartbeatInterval = setInterval(() => {
-        if (!res.writableEnded && !res.finished) {
-            try {
-                res.write(`: heartbeat ${Date.now()}\n\n`);
-                if (typeof res.flush === 'function') res.flush();
-            } catch (err) {
-                console.log('Heartbeat write failed:', err.message);
-                clearInterval(heartbeatInterval);
-            }
-        } else {
-            clearInterval(heartbeatInterval);
-        }
-    }, 15000);
-
-    req.on('close', () => {
-        if (heartbeatInterval) clearInterval(heartbeatInterval);
-        if (!res.writableEnded) res.end();
-    });
-
-    return (event, data) => {
-        if (res.writableEnded || res.finished) return;
-        try {
-            res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-            if (typeof res.flush === 'function') res.flush();
-        } catch (err) {
-            console.error(`Failed to send SSE event ${event}:`, err.message);
-        }
-    };
+function getJakartaDateString(offsetDays = 0) {
+    const now = new Date(Date.now() - offsetDays * 24 * 60 * 60 * 1000);
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta' }).format(now);
 }
 
-// Helper GET generik ke jagel.id (pakai fetch, tanpa auth header — untuk endpoint public v2/customer)
+function extractDateOnly(creationDate) {
+    if (!creationDate) return null;
+    return String(creationDate).split(' ')[0];
+}
+
 async function jagelGet(path, params = {}) {
     const url = new URL(`${JAGEL_BASE_URL}${path}`);
     Object.entries(params).forEach(([k, v]) => {
@@ -135,7 +126,7 @@ async function jagelGet(path, params = {}) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🔥 FUNGSI GET PARTNER DETAIL (PAKAI ENDPOINT USERS)
+// FUNGSI GET PARTNER DETAIL
 // ─────────────────────────────────────────────────────────────
 async function getPartnerDetailByViewUid(viewUid) {
     if (!viewUid) return null;
@@ -166,11 +157,10 @@ async function getPartnerDetailByViewUid(viewUid) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 🔥 FUNGSI GET PARTNER REPORT (FILTER KATEGORI USAHA)
+// FUNGSI GET PARTNER REPORT
 // ─────────────────────────────────────────────────────────────
 async function fetchPartnerReport({ unique_id, paginate = 10, partner_status, page }) {
     const url = 'https://app.jagel.id/api/partner/report';
-
     const payload = { unique_id, paginate };
     if (partner_status !== undefined) payload.partner_status = partner_status;
     if (page !== undefined) payload.page = page;
@@ -194,10 +184,82 @@ function filterPartnersByKategoriUsaha(partners, kategoriUsaha) {
     });
 }
 
+function extractDesaFromLocationRaw(locationRaw) {
+    if (!locationRaw) return null;
+    const parts = locationRaw.split(';');
+    if (parts.length < 1) return null;
+
+    const address = parts[0];
+    const addressParts = address.split(',').map(s => s.trim());
+
+    for (let i = 0; i < addressParts.length; i++) {
+        const part = addressParts[i].trim();
+        if (part.includes('+') || part.includes('Kec.') || part.includes('Kab.') ||
+            part.includes('Prov.') || part.includes('Indonesia') ||
+            /^\d{5}$/.test(part) ||
+            part.includes('Kecamatan') || part.includes('Kabupaten')) {
+            continue;
+        }
+        if (part.length > 1 && !part.includes('RT') && !part.includes('RW')) {
+            return part;
+        }
+    }
+
+    const match = address.match(/^[^,]+,?\s*([^,]+)/);
+    if (match && match[1]) {
+        const potentialDesa = match[1].trim();
+        if (potentialDesa.length > 1 && !potentialDesa.includes('+')) {
+            return potentialDesa;
+        }
+    }
+    return null;
+}
+
+async function getPertanianEnrichmentMap() {
+    try {
+        const reportData = await fetchPartnerReport({
+            unique_id: DEFAULT_UNIQUE_ID,
+            paginate: 100,
+            partner_status: DEFAULT_PARTNER_STATUS,
+            page: 1,
+        });
+
+        const allPartners = reportData?.partners?.data || [];
+        const filtered = filterPartnersByKategoriUsaha(allPartners, 'PRODUK PERTANIAN');
+
+        const mapByPartnerViewUid = {};
+        const mapByViewUid = {};
+
+        filtered.forEach(partner => {
+            const form = partner.formSubmit?.data || {};
+            const locationRaw = form.lokasiusaha || '';
+            const desa = extractDesaFromLocationRaw(locationRaw) || form.kelurahan || '';
+
+            const enriched = {
+                businessName: form.namausaha || null,
+                ownerFirstName: (form.namapemilik || '').trim().split(/\s+/)[0] || '',
+                kecamatan: form.kecamatan || '',
+                kabupaten: form.kabupaten || '',
+                provinsi: form.provinsi || '',
+                desa,
+                location_raw: locationRaw || null,
+                joinedDate: partner.partner_date_accept || partner.partner_date || null,
+            };
+
+            if (partner.view_uid) mapByPartnerViewUid[partner.view_uid] = enriched;
+            if (partner.view_uid) mapByViewUid[partner.view_uid] = enriched;
+        });
+
+        return { mapByPartnerViewUid, mapByViewUid };
+    } catch (err) {
+        console.log('⚠️ Gagal ambil data enrichment pertanian:', err.message);
+        return { mapByPartnerViewUid: {}, mapByViewUid: {} };
+    }
+}
+
 // ─────────────────────────────────────────────────────────────
 // FUNGSI FETCH DARI JAGEL (untuk MAKANAN / stores)
 // ─────────────────────────────────────────────────────────────
-
 async function fetchAllStoresFromComponent(componentUid) {
     let all = [], page = 1, lastPage = 1;
     do {
@@ -220,22 +282,20 @@ async function fetchStoreDetail(viewUid) {
     return data.data;
 }
 
-// ── Ambil 1 halaman dari komponen (mis. daftar mitra Petani Lokal) ──
 async function fetchComponentPage(componentUid, page = 1, perPage = 24) {
     const url = `https://app.jagel.id/api/v2/customer/component/${componentUid}`
         + `?codename=${CODENAME}&page=${page}&app_mode=1&per_page=${perPage}`;
     const { data } = await axios.get(url, { headers: jagelHeaders });
     if (!data.success) throw new Error(`Component API error (uid=${componentUid})`);
-    return data.data; // { view_uid, name, lists: { current_page, data, last_page, ... }, ... }
+    return data.data;
 }
 
-// ── Ambil 1 halaman children dari sebuah list (mis. produk milik satu mitra) ──
 async function fetchListChildrenPage(parentUid, page = 1, searchList = '') {
     const url = `https://app.jagel.id/api/v2/customer/list/${parentUid}/children`
         + `?codename=${CODENAME}&page=${page}&search_list=${encodeURIComponent(searchList || '')}`;
     const { data } = await axios.get(url, { headers: jagelHeaders });
     if (!data.success) throw new Error(`Children API error (uid=${parentUid})`);
-    return data.data; // { current_page, data, last_page, per_page, total, ... }
+    return data.data;
 }
 
 async function fetchChildren(parentUid, page = 1, perPage = 100) {
@@ -298,10 +358,6 @@ async function fetchStoreProductsWithCategories(viewUid) {
     }
 }
 
-// ─────────────────────────────────────────────────────────────
-// FORMAT PRODUK DENGAN PARTNER COMMISSION
-// ─────────────────────────────────────────────────────────────
-
 function formatProductWithCommission(product, storeDetail, userCoords, partnerInfo = null) {
     const distance = (storeDetail.origin_lat && storeDetail.origin_lng)
         ? getDistance(userCoords.lat, userCoords.lng,
@@ -354,7 +410,668 @@ function formatProductWithCommission(product, storeDetail, userCoords, partnerIn
 }
 
 // ─────────────────────────────────────────────────────────────
-// SSE: /api/makanan/stores-stream
+// FUNGSI DRIVER REPORT
+// ─────────────────────────────────────────────────────────────
+async function fetchDriverReportList({ app_uid = DEFAULT_UNIQUE_ID, paginate = 10, page = 1 }) {
+    const url = 'https://app.jagel.id/api/owner/driver/report';
+    const payload = { app_uid, paginate, page };
+
+    console.log('🌐 Fetch driver report (POST):', url, payload);
+
+    const response = await axios.post(url, payload, { headers: jagelHeaders });
+
+    if (!response.data || !response.data.success) {
+        throw new Error('Driver report API error');
+    }
+
+    return response.data.data;
+}
+
+async function fetchDriverOrderDetail(uniqueId) {
+    const url = `https://app.jagel.id/api/order/view-detail-owner/${uniqueId}`;
+    console.log('🌐 Fetch driver order detail:', url);
+
+    const response = await axios.get(url, { headers: jagelHeaders });
+
+    if (!response.data || !response.data.success) {
+        throw new Error(`Driver detail API error for ${uniqueId}`);
+    }
+
+    return response.data.data;
+}
+
+async function fetchAllDriverOrdersForDate({
+    app_uid = DEFAULT_UNIQUE_ID,
+    targetDate,
+    perPage = 50,
+    maxPages = 50,
+}) {
+    let page = 1;
+    let collected = [];
+    let stop = false;
+    let appMeta = null;
+    let pagesScanned = 0;
+
+    while (!stop && page <= maxPages) {
+        const reportData = await fetchDriverReportList({ app_uid, paginate: perPage, page });
+        if (!appMeta) appMeta = reportData;
+        pagesScanned = page;
+
+        const items = reportData?.driver?.data || [];
+        if (items.length === 0) break;
+
+        for (const item of items) {
+            const itemDate = extractDateOnly(item.creation_date);
+            if (itemDate === targetDate) {
+                collected.push(item);
+            } else if (itemDate && itemDate < targetDate) {
+                stop = true;
+                break;
+            }
+        }
+
+        const lastPage = reportData?.driver?.last_page || 1;
+        if (page >= lastPage) break;
+        page++;
+    }
+
+    return { items: collected, appMeta, pagesScanned };
+}
+
+function extractDriverPhone(detail) {
+    return detail?.driver?.phone || detail?.driver_phone || null;
+}
+
+function extractExpedition(detail) {
+    return detail?.expedition || null;
+}
+
+function extractDriverInfo(detail) {
+    const d = detail?.driver || {};
+    return {
+        view_uid: d.view_uid || null,
+        name: d.name || null,
+        phone: d.phone || null,
+        license_plate: d.driver_license_plate || null,
+        vehicle_model: d.driver_model || null,
+        photo: d.photo || null,
+    };
+}
+
+function extractDistanceInfo(detail) {
+    const lines = detail?.lines || [];
+    let target = lines.find(l => l.category === 2 && l.distance != null);
+    if (!target) target = lines.find(l => l.distance != null);
+
+    if (!target) {
+        return { distance_meters: null, distance_km: null, distance_text: null };
+    }
+
+    return {
+        distance_meters: target.distance,
+        distance_km: Math.round((target.distance / 1000) * 100) / 100,
+        distance_text: target.distance_text || null,
+    };
+}
+
+async function fetchAllBalanceTransactions(unique_id) {
+    const url = 'https://app.jagel.id/api/myapp/balance-report-transaction';
+    const allData = [];
+    let currentPage = 1;
+    let lastPage = null;
+
+    console.log(`🌐 Fetch balance transactions (page 1...)`);
+
+    try {
+        while (true) {
+            const response = await axios.post(
+                url,
+                { unique_id: unique_id, paginate: 100, page: currentPage },
+                { headers: jagelHeaders }
+            );
+
+            if (!response.data || !response.data.success) {
+                throw new Error(response.data?.message || 'Balance API error');
+            }
+
+            const pageData = response.data.data;
+            const items = pageData.data || [];
+
+            if (items.length === 0) break;
+
+            allData.push(...items);
+            lastPage = pageData.last_page || 0;
+            if (currentPage >= lastPage) break;
+            currentPage++;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+
+        console.log(`✅ Total ${allData.length} transaksi balance diambil`);
+        return allData;
+    } catch (err) {
+        console.error('❌ Gagal fetch balance transactions:', err.message);
+        throw err;
+    }
+}
+
+async function fetchOrderDetailByOrderNo(orderNo, { maxDaysBack = 7 } = {}) {
+    try {
+        for (let dayOffset = 0; dayOffset <= maxDaysBack; dayOffset++) {
+            const targetDate = getJakartaDateString(dayOffset);
+            const scanResult = await fetchAllDriverOrdersForDate({ targetDate });
+            const found = scanResult.items.find(item => item.order_no === orderNo);
+
+            if (found) {
+                const detail = await fetchDriverOrderDetail(found.unique_id);
+                return { ...found, ...detail };
+            }
+        }
+        return null;
+    } catch (err) {
+        console.warn(`⚠️ Gagal ambil detail order ${orderNo}: ${err.message}`);
+        return null;
+    }
+}
+
+async function fetchCourierIconAll(unique_id) {
+    const url = 'https://app.jagel.id/api/myapp/courierIcon/all';
+    console.log('🌐 Fetch courier master (GET):', url, { unique_id });
+
+    const response = await axios.get(url, {
+        headers: jagelHeaders,
+        params: { unique_id },
+    });
+
+    if (!response.data || !response.data.success) {
+        throw new Error(response.data?.message || 'CourierIcon API error');
+    }
+
+    return response.data.data;
+}
+
+async function fetchMyDiscount({ filter, unique_id }) {
+    const url = 'https://app.jagel.id/api/mydiscount';
+    console.log('🌐 Fetch mydiscount (GET):', url, { filter, unique_id });
+
+    const response = await axios.get(url, {
+        headers: jagelHeaders,
+        params: { filter, unique_id }
+    });
+
+    if (!response.data || !response.data.success) {
+        throw new Error(response.data?.message || 'Mydiscount API error');
+    }
+
+    return response.data.data;
+}
+
+// ─────────────────────────────────────────────────────────────
+// MODEL BONUS BBM
+// ─────────────────────────────────────────────────────────────
+class BonusBbm {
+    constructor() {
+        this.pool = pool;
+        this.KM_PER_BONUS = KM_PER_BONUS;
+        this.BONUS_PER_BLOCK = BONUS_PER_BLOCK;
+        this.jagelApiKey = CONFIG.jagelApiKey;
+        console.log('🚀 [BONUS] BonusBbm initialized');
+        console.log(`📊 [BONUS] KM per bonus: ${this.KM_PER_BONUS}km`);
+        console.log(`📊 [BONUS] Bonus per block: Rp${this.BONUS_PER_BLOCK}`);
+    }
+
+    async processAutoBonus(orderData) {
+        const {
+            driver_username,
+            driver_phone,
+            order_no,
+            distance_km,
+            creation_date,
+            total_price,
+            unique_id
+        } = orderData;
+
+        console.log('═'.repeat(60));
+        console.log('🔄 [PROCESS-BONUS] Starting auto bonus processing');
+        console.log('═'.repeat(60));
+        console.log(`📋 [PROCESS-BONUS] Order: ${order_no}`);
+        console.log(`📋 [PROCESS-BONUS] Driver: ${driver_username}`);
+        console.log(`📋 [PROCESS-BONUS] Distance: ${distance_km}km`);
+
+        const connection = await this.pool.getConnection();
+        await connection.beginTransaction();
+
+        try {
+            const today = new Date().toISOString().split('T')[0];
+            console.log(`📅 [PROCESS-BONUS] Today: ${today}`);
+
+            const [todayBonuses] = await connection.execute(
+                `SELECT
+                    COALESCE(SUM(amount), 0) as total_bonus,
+                    COALESCE(SUM(achieved_km), 0) as total_km,
+                    COUNT(*) as total_count
+                FROM bonus_bbm
+                WHERE driver_username = ? AND DATE(created_at) = ? AND status = 'claimed'`,
+                [driver_username, today]
+            );
+
+            console.log(`📊 [PROCESS-BONUS] Today's stats:`, todayBonuses[0]);
+
+            const currentTotalBonus = Number(todayBonuses[0]?.total_bonus) || 0;
+            const currentTotalKm = Number(todayBonuses[0]?.total_km) || 0;
+
+            const totalKmToday = currentTotalKm + distance_km;
+            const bonusBlocks = Math.floor(totalKmToday / this.KM_PER_BONUS);
+            const existingBlocks = Math.floor(currentTotalKm / this.KM_PER_BONUS);
+            const newBlocks = bonusBlocks - existingBlocks;
+
+            console.log(`📊 [PROCESS-BONUS] KM: ${currentTotalKm} -> ${totalKmToday}, New: ${newBlocks}`);
+
+            const createdBonuses = [];
+
+            if (newBlocks <= 0) {
+                console.log(`⏭️ [PROCESS-BONUS] No new bonus (need ${this.KM_PER_BONUS}km per block)`);
+                await connection.commit();
+                return {
+                    success: true,
+                    new_bonuses: [],
+                    message: 'Belum mencapai target bonus',
+                    total_km_today: totalKmToday,
+                    total_bonus_today: currentTotalBonus,
+                    next_target: (bonusBlocks + 1) * this.KM_PER_BONUS
+                };
+            }
+
+            console.log(`📝 [PROCESS-BONUS] Creating ${newBlocks} new bonus(es)...`);
+
+            for (let i = 0; i < newBlocks; i++) {
+                const blockNumber = existingBlocks + i + 1;
+                const achievedKm = Math.min(
+                    (blockNumber * this.KM_PER_BONUS) - (currentTotalKm + (i * this.KM_PER_BONUS)),
+                    this.KM_PER_BONUS
+                );
+
+                const balanceBefore = currentTotalBonus + (i * this.BONUS_PER_BLOCK);
+                const balanceAfter = balanceBefore + this.BONUS_PER_BLOCK;
+
+                const expiredAt = new Date();
+                expiredAt.setDate(expiredAt.getDate() + 7);
+
+                const [bonusResult] = await connection.execute(
+                    `INSERT INTO bonus_bbm
+                    (driver_username, driver_phone, order_no, achieved_km, target_km,
+                    amount, bonus_type, status, balance_before, balance_after,
+                    expired_at, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'masuk', 'pending', ?, ?, ?, NOW())`,
+                    [
+                        driver_username,
+                        driver_phone,
+                        order_no,
+                        achievedKm,
+                        this.KM_PER_BONUS,
+                        this.BONUS_PER_BLOCK,
+                        balanceBefore,
+                        balanceAfter,
+                        expiredAt
+                    ]
+                );
+
+                const bonusId = bonusResult.insertId;
+
+                await connection.execute(
+                    `INSERT INTO bonus_bbm_orders (bonus_id, order_no, distance_km, unique_id, order_date)
+                    VALUES (?, ?, ?, ?, ?)`,
+                    [bonusId, order_no, distance_km, unique_id || null, creation_date || null]
+                );
+
+                console.log(`✅ [PROCESS-BONUS] Bonus created: ID ${bonusId}`);
+
+                createdBonuses.push({
+                    id: bonusId,
+                    amount: this.BONUS_PER_BLOCK,
+                    achieved_km: achievedKm,
+                    balance_before: balanceBefore,
+                    balance_after: balanceAfter,
+                    expired_at: expiredAt
+                });
+            }
+
+            await connection.commit();
+
+            console.log(`✅ [PROCESS-BONUS] Total ${createdBonuses.length} bonus created`);
+            console.log('═'.repeat(60));
+
+            return {
+                success: true,
+                new_bonuses: createdBonuses,
+                total_bonus_today: currentTotalBonus + (createdBonuses.length * this.BONUS_PER_BLOCK),
+                total_km_today: totalKmToday,
+                next_target: (bonusBlocks + 1) * this.KM_PER_BONUS
+            };
+
+        } catch (error) {
+            await connection.rollback();
+            console.error('❌ [PROCESS-BONUS] Error:', error);
+            throw error;
+        } finally {
+            connection.release();
+        }
+    }
+
+    async hasOrderBonus(orderNo, driverUsername) {
+        console.log(`🔍 [HAS-BONUS] Checking order ${orderNo} for driver ${driverUsername}`);
+        const [rows] = await this.pool.execute(
+            `SELECT COUNT(*) as count FROM bonus_bbm
+            WHERE driver_username = ? AND order_no = ?`,
+            [driverUsername, orderNo]
+        );
+        const hasBonus = rows[0].count > 0;
+        console.log(`🔍 [HAS-BONUS] Result: ${hasBonus}`);
+        return hasBonus;
+    }
+
+    async getDriverBonusStatus(driverUsername) {
+        console.log(`📊 [STATUS] Getting bonus status for ${driverUsername}`);
+        const today = new Date().toISOString().split('T')[0];
+
+        const [rows] = await this.pool.execute(
+            `SELECT
+                SUM(achieved_km) as total_km_today,
+                SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) as pending_bonus,
+                SUM(CASE WHEN status = 'claimed' THEN amount ELSE 0 END) as claimed_bonus,
+                COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count,
+                COUNT(CASE WHEN status = 'claimed' THEN 1 END) as claimed_count
+            FROM bonus_bbm
+            WHERE driver_username = ? AND DATE(created_at) = ?`,
+            [driverUsername, today]
+        );
+
+        const totalKm = rows[0]?.total_km_today || 0;
+        const bonusBlocks = Math.floor(totalKm / this.KM_PER_BONUS);
+        const nextTarget = (bonusBlocks + 1) * this.KM_PER_BONUS;
+        const progress = (totalKm % this.KM_PER_BONUS) / this.KM_PER_BONUS * 100;
+
+        return {
+            total_km_today: totalKm,
+            bonus_blocks: bonusBlocks,
+            next_target_km: nextTarget,
+            progress: Math.min(progress, 100),
+            pending_bonus: rows[0]?.pending_bonus || 0,
+            claimed_bonus: rows[0]?.claimed_bonus || 0,
+            pending_count: rows[0]?.pending_count || 0,
+            claimed_count: rows[0]?.claimed_count || 0,
+            km_per_bonus: this.KM_PER_BONUS,
+            bonus_per_block: this.BONUS_PER_BLOCK,
+        };
+    }
+
+    async getBonusesByDriver(driverUsername, opts = {}) {
+        const { status, from, to, limit = 10, offset = 0 } = opts;
+
+        console.log(`📋 [LIST] Getting bonuses for ${driverUsername}`);
+
+        const where = ['driver_username = ?'];
+        const params = [driverUsername];
+
+        if (status) {
+            where.push('status = ?');
+            params.push(status);
+        }
+        if (from) {
+            where.push('DATE(created_at) >= ?');
+            params.push(from);
+        }
+        if (to) {
+            where.push('DATE(created_at) <= ?');
+            params.push(to);
+        }
+
+        const [bonusRows] = await this.pool.query(
+            `SELECT id, driver_username, driver_phone, order_no, achieved_km, target_km,
+            amount, bonus_type, status, balance_before, balance_after,
+            expired_at, created_at, claimed_at
+            FROM bonus_bbm
+            WHERE ${where.join(' AND ')}
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?`,
+            [...params, limit, offset]
+        );
+
+        const [[{ total }]] = await this.pool.query(
+            `SELECT COUNT(*) as total FROM bonus_bbm WHERE ${where.join(' AND ')}`,
+            params
+        );
+
+        const enriched = await this._attachOrders(bonusRows);
+        return { items: enriched, total, limit, offset };
+    }
+
+    async getBonusDetail(bonusId) {
+        console.log(`🔍 [DETAIL] Getting bonus detail for ID: ${bonusId}`);
+        const [rows] = await this.pool.execute(
+            `SELECT id, driver_username, driver_phone, order_no, achieved_km, target_km,
+            amount, bonus_type, status, balance_before, balance_after,
+            expired_at, created_at, claimed_at
+            FROM bonus_bbm WHERE id = ?`,
+            [bonusId]
+        );
+
+        if (rows.length === 0) return null;
+        const [enriched] = await this._attachOrders(rows);
+        return enriched;
+    }
+
+    async _attachOrders(bonusRows) {
+        if (bonusRows.length === 0) return [];
+
+        const bonusIds = bonusRows.map(b => b.id);
+        const [orderRows] = await this.pool.query(
+            `SELECT bonus_id, order_no, distance_km, unique_id, order_date
+            FROM bonus_bbm_orders
+            WHERE bonus_id IN (?)
+            ORDER BY order_date ASC, id ASC`,
+            [bonusIds]
+        );
+
+        const ordersByBonus = {};
+        orderRows.forEach(o => {
+            (ordersByBonus[o.bonus_id] = ordersByBonus[o.bonus_id] || []).push({
+                order_no: o.order_no,
+                distance_km: o.distance_km,
+                unique_id: o.unique_id,
+                order_date: o.order_date,
+            });
+        });
+
+        return bonusRows.map(b => ({
+            id: b.id,
+            driver_username: b.driver_username,
+            driver_phone: b.driver_phone,
+            type: b.bonus_type,
+            status: b.status,
+            achieved_km: Number(b.achieved_km),
+            target_km: Number(b.target_km),
+            amount: b.amount,
+            balance_before: b.balance_before,
+            balance_after: b.balance_after,
+            created_at: b.created_at,
+            claimed_at: b.claimed_at,
+            expired_at: b.expired_at,
+            order_no: b.order_no,
+            orders: ordersByBonus[b.id] || [],
+        }));
+    }
+
+    async _adjustBalanceAndNotify({ username, amount, note }) {
+        console.log(`📤 [ADJUST-BALANCE] Starting for ${username}, Rp${amount}`);
+        console.log(`📤 [ADJUST-BALANCE] Amount type: ${typeof amount}, value: ${amount}`);
+
+        const numericAmount = Number(amount);
+
+        const adjustPayload = {
+            type: "username",
+            value: username,
+            apikey: this.jagelApiKey,
+            amount: numericAmount,
+            adjust_balance_admin: 0,
+            note: note,
+        };
+
+        console.log(`📤 [ADJUST-BALANCE] Payload:`, JSON.stringify(adjustPayload, null, 2));
+
+        try {
+            const adjustResponse = await axios.post(
+                'https://api.jagel.id/v1/balance/adjust',
+                adjustPayload,
+                {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json'
+                    },
+                    timeout: 30000,
+                }
+            );
+
+            console.log(`✅ [ADJUST-BALANCE] Response status: ${adjustResponse.status}`);
+            console.log(`✅ [ADJUST-BALANCE] Response data:`, adjustResponse.data);
+
+            if (adjustResponse.data?.success !== true) {
+                throw new Error("Adjust balance gagal: " + JSON.stringify(adjustResponse.data));
+            }
+
+            try {
+                const msgResponse = await axios.post(
+                    'https://api.jagel.id/v1/message/send',
+                    {
+                        type: "username",
+                        value: username,
+                        apikey: this.jagelApiKey,
+                        content: note,
+                    },
+                    {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json'
+                        },
+                        timeout: 30000,
+                    }
+                );
+                console.log(`✅ [ADJUST-BALANCE] Message sent:`, msgResponse.data);
+            } catch (msgErr) {
+                console.error(`⚠️ Failed to send message:`, msgErr.message);
+                if (msgErr.response) {
+                    console.error(`⚠️ Message error response:`, msgErr.response.data);
+                }
+            }
+
+            return adjustResponse.data;
+
+        } catch (error) {
+            console.error(`❌ [ADJUST-BALANCE] Error:`, error.message);
+            if (error.response) {
+                console.error(`❌ [ADJUST-BALANCE] Response status: ${error.response.status}`);
+                console.error(`❌ [ADJUST-BALANCE] Response data:`, error.response.data);
+            }
+            throw error;
+        }
+    }
+
+    async claimBonus(bonusId) {
+        console.log('═'.repeat(60));
+        console.log(`💰 [CLAIM] Claiming bonus ID: ${bonusId}`);
+        console.log('═'.repeat(60));
+
+        const connection = await this.pool.getConnection();
+        await connection.beginTransaction();
+
+        try {
+            const [rows] = await connection.execute(
+                `SELECT * FROM bonus_bbm WHERE id = ? FOR UPDATE`,
+                [bonusId]
+            );
+
+            const bonus = rows[0];
+            if (!bonus) {
+                throw new Error('Bonus tidak ditemukan');
+            }
+
+            console.log(`📋 [CLAIM] Bonus: ${bonus.driver_username}, Rp${bonus.amount}, status: ${bonus.status}`);
+
+            if (bonus.status !== 'pending') {
+                throw new Error(`Bonus sudah berstatus '${bonus.status}', tidak bisa diklaim ulang`);
+            }
+
+            if (bonus.expired_at && new Date(bonus.expired_at) < new Date()) {
+                await connection.execute(
+                    `UPDATE bonus_bbm SET status = 'expired' WHERE id = ?`,
+                    [bonusId]
+                );
+                await connection.commit();
+                throw new Error('Bonus sudah expired');
+            }
+
+            const amount = Number(bonus.amount);
+            const username = bonus.driver_username.trim();
+            const formattedAmount = amount.toLocaleString('id-ID');
+            const note = `Bonus BBM Cair || nominal Rp. ${formattedAmount} || jarak tempuh ${bonus.achieved_km} km || Order ${bonus.order_no}`;
+
+            console.log(`📝 [CLAIM] Updating status to 'claimed'...`);
+            await connection.execute(
+                `UPDATE bonus_bbm SET status = 'claimed', claimed_at = NOW() WHERE id = ?`,
+                [bonusId]
+            );
+
+            await connection.commit();
+
+            console.log(`📤 [CLAIM] Adjusting balance with Jagel API...`);
+            console.log(`📤 [CLAIM] Amount: ${amount} (${typeof amount})`);
+
+            const jagelResult = await this._adjustBalanceAndNotify({ username, amount, note });
+
+            console.log(`✅ [CLAIM] Bonus claimed successfully!`);
+            console.log(`📊 [CLAIM] Jagel response:`, jagelResult);
+            console.log('═'.repeat(60));
+
+            return {
+                success: true,
+                bonus_id: bonusId,
+                driver_username: username,
+                amount,
+                note,
+                jagel_response: jagelResult,
+            };
+
+        } catch (error) {
+            await connection.rollback();
+            console.error(`❌ [CLAIM] Error:`, error.message);
+            if (error.response) {
+                console.error(`❌ [CLAIM] Response data:`, error.response.data);
+            }
+            console.log('═'.repeat(60));
+            throw error;
+        } finally {
+            connection.release();
+        }
+    }
+
+    async markExpiredBonuses() {
+        console.log(`⏰ [EXPIRE] Marking expired bonuses...`);
+        const [result] = await this.pool.execute(
+            `UPDATE bonus_bbm
+            SET status = 'expired'
+            WHERE status = 'pending' AND expired_at IS NOT NULL AND expired_at < NOW()`
+        );
+        console.log(`✅ [EXPIRE] ${result.affectedRows} bonuses marked as expired`);
+        return { expired_count: result.affectedRows };
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// INSTANSIASI BONUS MODEL
+// ─────────────────────────────────────────────────────────────
+const bonusModel = new BonusBbm();
+
+// ─────────────────────────────────────────────────────────────
+// ENDPOINTS - MAKANAN
 // ─────────────────────────────────────────────────────────────
 app.get('/api/makanan/stores-stream', async (req, res) => {
     let isClosed = false;
@@ -419,9 +1136,6 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
         console.log(`📡 [makanan/stores-stream] lat=${userCoords.lat}, lng=${userCoords.lng}`);
 
         send('meta', { status: 'starting', userCoords });
-
-        const abortController = new AbortController();
-        req.on('close', () => abortController.abort());
 
         const stores = await fetchAllStoresFromComponent(MAKANAN_COMPONENT_UID);
 
@@ -531,9 +1245,6 @@ app.get('/api/makanan/stores-stream', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────
-// ENDPOINT JSON: GET /api/makanan/stores
-// ─────────────────────────────────────────────────────────────
 app.get('/api/makanan/stores', async (req, res) => {
     try {
         const userCoords = parseUserCoords(req.query);
@@ -581,9 +1292,6 @@ app.get('/api/makanan/stores', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────
-// ENDPOINT JSON: GET /api/makanan/store/:viewUid (DETAIL TOKO)
-// ─────────────────────────────────────────────────────────────
 app.get('/api/makanan/store/:viewUid', async (req, res) => {
     try {
         const { viewUid } = req.params;
@@ -620,9 +1328,6 @@ app.get('/api/makanan/store/:viewUid', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────
-// ENDPOINT JSON: GET /api/makanan/products/:storeUid
-// ─────────────────────────────────────────────────────────────
 app.get('/api/makanan/products/:storeUid', async (req, res) => {
     try {
         const { storeUid } = req.params;
@@ -701,7 +1406,7 @@ app.get('/api/makanan/products/:storeUid', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// ENDPOINT PARTNER MATCH
+// ENDPOINTS - PARTNER
 // ─────────────────────────────────────────────────────────────
 app.get('/api/partner/match', async (req, res) => {
     const { unique_id, phone, username, view_uid, name } = req.query;
@@ -825,9 +1530,6 @@ app.get('/api/partner/match', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────
-// ENDPOINT PARTNER MATCH - SEDERHANA
-// ─────────────────────────────────────────────────────────────
 app.get('/api/partner/:viewUid', async (req, res) => {
     const { viewUid } = req.params;
 
@@ -853,7 +1555,6 @@ app.get('/api/partner/:viewUid', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
-
 
 app.get('/api/partner/report/pertanian', async (req, res) => {
     const { unique_id, paginate, partner_status, page } = req.query;
@@ -924,81 +1625,9 @@ app.get('/api/partner/report/pertanian', async (req, res) => {
     }
 });
 
-
-function extractDesaFromLocationRaw(locationRaw) {
-    if (!locationRaw) return null;
-    const parts = locationRaw.split(';');
-    if (parts.length < 1) return null;
-
-    const address = parts[0];
-    const addressParts = address.split(',').map(s => s.trim());
-
-    for (let i = 0; i < addressParts.length; i++) {
-        const part = addressParts[i].trim();
-        if (part.includes('+') || part.includes('Kec.') || part.includes('Kab.') ||
-            part.includes('Prov.') || part.includes('Indonesia') ||
-            /^\d{5}$/.test(part) ||
-            part.includes('Kecamatan') || part.includes('Kabupaten')) {
-            continue;
-        }
-        if (part.length > 1 && !part.includes('RT') && !part.includes('RW')) {
-            return part;
-        }
-    }
-
-    const match = address.match(/^[^,]+,?\s*([^,]+)/);
-    if (match && match[1]) {
-        const potentialDesa = match[1].trim();
-        if (potentialDesa.length > 1 && !potentialDesa.includes('+')) {
-            return potentialDesa;
-        }
-    }
-    return null;
-}
-
-async function getPertanianEnrichmentMap() {
-    try {
-        const reportData = await fetchPartnerReport({
-            unique_id: DEFAULT_UNIQUE_ID,
-            paginate: 100,
-            partner_status: DEFAULT_PARTNER_STATUS,
-            page: 1,
-        });
-
-        const allPartners = reportData?.partners?.data || [];
-        const filtered = filterPartnersByKategoriUsaha(allPartners, 'PRODUK PERTANIAN');
-
-        const mapByPartnerViewUid = {};
-        const mapByViewUid = {};
-
-        filtered.forEach(partner => {
-            const form = partner.formSubmit?.data || {};
-            const locationRaw = form.lokasiusaha || '';
-            const desa = extractDesaFromLocationRaw(locationRaw) || form.kelurahan || '';
-
-            const enriched = {
-                businessName: form.namausaha || null,
-                ownerFirstName: (form.namapemilik || '').trim().split(/\s+/)[0] || '',
-                kecamatan: form.kecamatan || '',
-                kabupaten: form.kabupaten || '',
-                provinsi: form.provinsi || '',
-                desa,
-                location_raw: locationRaw || null,
-                joinedDate: partner.partner_date_accept || partner.partner_date || null,
-            };
-
-            if (partner.view_uid) mapByPartnerViewUid[partner.view_uid] = enriched;
-            if (partner.view_uid) mapByViewUid[partner.view_uid] = enriched;
-        });
-
-        return { mapByPartnerViewUid, mapByViewUid };
-    } catch (err) {
-        console.log('⚠️ Gagal ambil data enrichment pertanian:', err.message);
-        return { mapByPartnerViewUid: {}, mapByViewUid: {} };
-    }
-}
-
-
+// ─────────────────────────────────────────────────────────────
+// ENDPOINTS - PETANI LOKAL
+// ─────────────────────────────────────────────────────────────
 app.get('/api/petani/mitra', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -1025,7 +1654,6 @@ app.get('/api/petani/mitra', async (req, res) => {
                 enrichment.mapByViewUid[item.view_uid] ||
                 {};
 
-            // ── Parse location_raw untuk ambil koordinat ──
             let origin_lat = null;
             let origin_lng = null;
             const locationRaw = enrich.location_raw || '';
@@ -1053,10 +1681,8 @@ app.get('/api/petani/mitra', async (req, res) => {
                 partner_name: item.partner_name || null,
                 link_view: item.link_view || null,
                 distance: item.distance ?? null,
-                // ── Koordinat dari location_raw ──
                 origin_lat: origin_lat,
                 origin_lng: origin_lng,
-                // ── data hasil enrichment ──
                 ownerFirstName: enrich.ownerFirstName || '',
                 kecamatan: enrich.kecamatan || '',
                 kabupaten: enrich.kabupaten || '',
@@ -1166,7 +1792,9 @@ app.get('/api/petani/produk/:mitraUid', async (req, res) => {
     }
 });
 
-
+// ─────────────────────────────────────────────────────────────
+// ENDPOINTS - PREORDER
+// ─────────────────────────────────────────────────────────────
 app.get('/api/preorder/mitra', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -1181,7 +1809,7 @@ app.get('/api/preorder/mitra', async (req, res) => {
                 app_mode: 1,
                 per_page: perPage,
             }),
-            getPertanianEnrichmentMap(), // reuse map yang sudah ada
+            getPertanianEnrichmentMap(),
         ]);
 
         const lists = componentData.lists || {};
@@ -1194,7 +1822,7 @@ app.get('/api/preorder/mitra', async (req, res) => {
                 {};
 
             return {
-                view_uid: item.view_uid,           // ← dipakai untuk fetch produk
+                view_uid: item.view_uid,
                 title: (item.title || '').trim(),
                 image: item.image || null,
                 content: item.content || '',
@@ -1204,7 +1832,6 @@ app.get('/api/preorder/mitra', async (req, res) => {
                 partner_name: item.partner_name || null,
                 link_view: item.link_view || null,
                 distance: item.distance ?? null,
-                // ── data hasil enrichment (bisa kosong jika tidak ketemu) ──
                 ownerFirstName: enrich.ownerFirstName || '',
                 kecamatan: enrich.kecamatan || '',
                 kabupaten: enrich.kabupaten || '',
@@ -1314,7 +1941,8 @@ app.get('/api/preorder/produk/:mitraUid', async (req, res) => {
     }
 });
 
-
+// ─────────────────────────────────────────────────────────────
+// ENDPOINTS - PANEN HARI INI
 // ─────────────────────────────────────────────────────────────
 app.get('/api/panen-hari-ini/mitra', async (req, res) => {
     try {
@@ -1383,7 +2011,6 @@ app.get('/api/panen-hari-ini/mitra', async (req, res) => {
     }
 });
 
-
 app.get('/api/panen-hari-ini/produk/:mitraUid', async (req, res) => {
     try {
         const { mitraUid } = req.params;
@@ -1437,7 +2064,7 @@ app.get('/api/panen-hari-ini/produk/:mitraUid', async (req, res) => {
             title: (p.title || '').trim(),
             image: p.image || null,
             price: p.price || 0,
-            price_before_discount: p.price_before_discount || 0, // ← ditambahkan
+            price_before_discount: p.price_before_discount || 0,
             currency: p.currency || 'Rp',
             content: p.content || '',
             is_open: p.is_open === 1,
@@ -1464,6 +2091,9 @@ app.get('/api/panen-hari-ini/produk/:mitraUid', async (req, res) => {
     }
 });
 
+// ─────────────────────────────────────────────────────────────
+// ENDPOINTS - JADWAL PANEN
+// ─────────────────────────────────────────────────────────────
 app.get('/api/jadwal-panen/mitra', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
@@ -1531,13 +2161,6 @@ app.get('/api/jadwal-panen/mitra', async (req, res) => {
     }
 });
 
-// ─────────────────────────────────────────────────────────────
-// 🌱 ENDPOINT: GET /api/jadwal-panen/produk/:mitraUid
-// Daftar produk "Jadwal Panen" milik satu mitra — langsung ke
-// jagel /list/{uid}/children, dengan fallback pencarian ulang
-// lewat komponen Jadwal Panen.
-// Query params: page (default 1), search_list (opsional)
-// ─────────────────────────────────────────────────────────────
 app.get('/api/jadwal-panen/produk/:mitraUid', async (req, res) => {
     try {
         const { mitraUid } = req.params;
@@ -1618,28 +2241,8 @@ app.get('/api/jadwal-panen/produk/:mitraUid', async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// 🎟️ ENDPOINT: GET /api/mydiscount
-// Ambil voucher/diskon dari Jagel berdasarkan unique_id,
-// lalu filter hanya yang category === 1
-// Query params: filter (wajib), unique_id (wajib)
+// ENDPOINTS - DISCOUNT / VOUCHER
 // ─────────────────────────────────────────────────────────────
-async function fetchMyDiscount({ filter, unique_id }) {
-    const url = 'https://app.jagel.id/api/mydiscount';
-
-    console.log('🌐 Fetch mydiscount (GET):', url, { filter, unique_id });
-
-    const response = await axios.get(url, {
-        headers: jagelHeaders,
-        params: { filter, unique_id }
-    });
-
-    if (!response.data || !response.data.success) {
-        throw new Error(response.data?.message || 'Mydiscount API error');
-    }
-
-    return response.data.data;
-}
-
 app.get('/api/mydiscount', async (req, res) => {
     const { filter, unique_id } = req.query;
 
@@ -1670,159 +2273,14 @@ app.get('/api/mydiscount', async (req, res) => {
     }
 });
 
-
-async function fetchDriverReportList({ app_uid = DEFAULT_UNIQUE_ID, paginate = 10, page = 1 }) {
-    const url = 'https://app.jagel.id/api/owner/driver/report';
-    const payload = { app_uid, paginate, page };
-
-    console.log('🌐 Fetch driver report (POST):', url, payload);
-
-    const response = await axios.post(url, payload, { headers: jagelHeaders });
-
-    if (!response.data || !response.data.success) {
-        throw new Error('Driver report API error');
-    }
-
-    return response.data.data;
-}
-
 // ─────────────────────────────────────────────────────────────
-// 🔥 FUNGSI: Ambil detail 1 order driver — GET
+// ENDPOINTS - DRIVER REPORT
 // ─────────────────────────────────────────────────────────────
-async function fetchDriverOrderDetail(uniqueId) {
-    const url = `https://app.jagel.id/api/order/view-detail-owner/${uniqueId}`;
-
-    console.log('🌐 Fetch driver order detail:', url);
-
-    const response = await axios.get(url, { headers: jagelHeaders });
-
-    if (!response.data || !response.data.success) {
-        throw new Error(`Driver detail API error for ${uniqueId}`);
-    }
-
-    return response.data.data;
-}
-
-// ─────────────────────────────────────────────────────────────
-// 🗓️ HELPER: Dapatkan tanggal "hari ini" dalam zona waktu Jakarta
-// Format: YYYY-MM-DD
-// ─────────────────────────────────────────────────────────────
-function getJakartaDateString(offsetDays = 0) {
-    const now = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
-    // en-CA locale menghasilkan format YYYY-MM-DD secara default
-    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta' }).format(now);
-}
-
-// Ambil bagian tanggal saja dari creation_date, mis. "2026-07-09 19:30:56" -> "2026-07-09"
-function extractDateOnly(creationDate) {
-    if (!creationDate) return null;
-    return String(creationDate).split(' ')[0];
-}
-
-// ─────────────────────────────────────────────────────────────
-// 🔥 FUNGSI: Ambil SEMUA order driver untuk 1 tanggal tertentu.
-//
-// Karena list dari jagel terurut dari order terbaru -> terlama,
-// begitu ditemukan order dengan tanggal LEBIH LAMA dari target,
-// loop langsung berhenti (tidak perlu scan semua halaman).
-// ─────────────────────────────────────────────────────────────
-async function fetchAllDriverOrdersForDate({
-    app_uid = DEFAULT_UNIQUE_ID,
-    targetDate,
-    perPage = 50,
-    maxPages = 50,
-}) {
-    let page = 1;
-    let collected = [];
-    let stop = false;
-    let appMeta = null;
-    let pagesScanned = 0;
-
-    while (!stop && page <= maxPages) {
-        const reportData = await fetchDriverReportList({ app_uid, paginate: perPage, page });
-        if (!appMeta) appMeta = reportData;
-        pagesScanned = page;
-
-        const items = reportData?.driver?.data || [];
-        if (items.length === 0) break;
-
-        for (const item of items) {
-            const itemDate = extractDateOnly(item.creation_date);
-            if (itemDate === targetDate) {
-                collected.push(item);
-            } else if (itemDate && itemDate < targetDate) {
-                // Data sudah lebih lama dari tanggal target -> berhenti scan
-                stop = true;
-                break;
-            }
-            // jika itemDate > targetDate (order lebih baru dari target, kasus jarang
-            // misal request tanggal kemarin sementara halaman 1 masih order hari ini) -> skip, lanjut
-        }
-
-        const lastPage = reportData?.driver?.last_page || 1;
-        if (page >= lastPage) break;
-        page++;
-    }
-
-    return { items: collected, appMeta, pagesScanned };
-}
-
-// Cari nomor HP driver — field asli ada di data.driver.phone
-function extractDriverPhone(detail) {
-    return (
-        detail?.driver?.phone ||
-        detail?.driver_phone ||
-        null
-    );
-}
-
-// Jenis kurir/ekspedisi — field asli ada di data.expedition
-function extractExpedition(detail) {
-    return detail?.expedition || null;
-}
-
-// Info driver lengkap (nama, plat nomor, model motor, dll)
-function extractDriverInfo(detail) {
-    const d = detail?.driver || {};
-    return {
-        view_uid: d.view_uid || null,
-        name: d.name || null,
-        phone: d.phone || null,
-        license_plate: d.driver_license_plate || null,
-        vehicle_model: d.driver_model || null,
-        photo: d.photo || null,
-    };
-}
-
-// ─────────────────────────────────────────────────────────────
-// Jarak tempuh order — dipakai untuk hitung komisi BBM.
-// Diambil dari data.lines[], baris dengan category === 2
-// (baris "Kurir Food" / ongkir) yang punya field distance.
-// distance dari jagel dalam METER.
-// ─────────────────────────────────────────────────────────────
-function extractDistanceInfo(detail) {
-    const lines = detail?.lines || [];
-
-    let target = lines.find(l => l.category === 2 && l.distance != null);
-    if (!target) target = lines.find(l => l.distance != null); // fallback
-
-    if (!target) {
-        return { distance_meters: null, distance_km: null, distance_text: null };
-    }
-
-    return {
-        distance_meters: target.distance,
-        distance_km: Math.round((target.distance / 1000) * 100) / 100, // 2 desimal
-        distance_text: target.distance_text || null,
-    };
-}
-
-
 app.get('/api/driver/report', async (req, res) => {
     try {
         const app_uid = req.query.app_uid || DEFAULT_UNIQUE_ID;
         const phoneFilter = req.query.phone ? String(req.query.phone).trim() : null;
-        const dateParam = req.query.date; // 'YYYY-MM-DD' | 'all' | undefined
+        const dateParam = req.query.date;
 
         let driverList = [];
         let reportData = null;
@@ -1830,7 +2288,6 @@ app.get('/api/driver/report', async (req, res) => {
         let pagesScanned = null;
 
         if (dateParam === 'all') {
-            // ── Mode lama: single page manual, tanpa filter tanggal ──
             const page = parseInt(req.query.page) || 1;
             const paginate = parseInt(req.query.paginate) || 10;
 
@@ -1839,7 +2296,6 @@ app.get('/api/driver/report', async (req, res) => {
             reportData = await fetchDriverReportList({ app_uid, paginate, page });
             driverList = reportData?.driver?.data || [];
         } else {
-            // ── Mode default: filter by tanggal (hari ini kalau tidak diisi) ──
             targetDate = dateParam || getJakartaDateString();
             const perPage = parseInt(req.query.paginate) || 50;
 
@@ -1851,7 +2307,6 @@ app.get('/api/driver/report', async (req, res) => {
             pagesScanned = scanResult.pagesScanned;
         }
 
-        // Ambil detail tiap order secara batch (biar tidak membanjiri API jagel)
         const batches = chunk(driverList, BATCH_SIZE);
         const enrichedResults = [];
 
@@ -1868,7 +2323,6 @@ app.get('/api/driver/report', async (req, res) => {
             enrichedResults.push(...batchResults);
         }
 
-        // Filter hanya expedition = "kurir - kurir food"
         let filtered = enrichedResults
             .filter(r => r.ok)
             .filter(r => {
@@ -1877,7 +2331,6 @@ app.get('/api/driver/report', async (req, res) => {
                     && expedition.toLowerCase() === DRIVER_EXPEDITION_FILTER.toLowerCase();
             });
 
-        // Filter tambahan by phone (kalau diminta frontend)
         if (phoneFilter) {
             filtered = filtered.filter(r => {
                 const phone = extractDriverPhone(r.detail);
@@ -1895,7 +2348,7 @@ app.get('/api/driver/report', async (req, res) => {
                 total_price: r.item.total_price,
                 currency: r.item.currency,
                 expedition: extractExpedition(r.detail),
-                courrier_type: r.detail?.courrier_type ?? null,   // ← BARU: dipakai untuk cocokkan ke /api/master/courier
+                courrier_type: r.detail?.courrier_type ?? null,
                 driver_phone: extractDriverPhone(r.detail),
                 driver_info: extractDriverInfo(r.detail),
                 distance_meters: distanceInfo.distance_meters,
@@ -1910,13 +2363,9 @@ app.get('/api/driver/report', async (req, res) => {
         });
 
         const failedCount = enrichedResults.filter(r => !r.ok).length;
-
-        // Total nilai order (berguna buat rekap komisi BBM harian)
         const totalOrderValue = data.reduce((sum, d) => sum + (d.total_price || 0), 0);
         const totalDistanceKm = data.reduce((sum, d) => sum + (d.distance_km || 0), 0);
 
-        // ── Ringkasan per driver: total order, total km, total nilai order ──
-        // Ini yang dipakai untuk hitung ulang komisi BBM tiap hari (reset per hari).
         const summaryMap = {};
         data.forEach(d => {
             const key = d.driver_username || d.driver_phone || 'unknown';
@@ -1949,8 +2398,8 @@ app.get('/api/driver/report', async (req, res) => {
             revenue: reportData?.revenue || null,
             currency: reportData?.currency || 'Rp',
             filter: {
-                date: targetDate,               // null jika mode date=all
-                pages_scanned: pagesScanned,    // null jika mode date=all
+                date: targetDate,
+                pages_scanned: pagesScanned,
                 phone: phoneFilter,
             },
             total_raw: driverList.length,
@@ -1968,14 +2417,11 @@ app.get('/api/driver/report', async (req, res) => {
     }
 });
 
-// ═══════════════════════════════════════════════════════════════
-// FINAL: ENDPOINT DRIVER REPORT — TANPA FILTER EXPEDITION
-// ═══════════════════════════════════════════════════════════════
 app.get('/api/driver/report/all-expedition', async (req, res) => {
     try {
         const app_uid = req.query.app_uid || DEFAULT_UNIQUE_ID;
         const phoneFilter = req.query.phone ? String(req.query.phone).trim() : null;
-        const dateParam = req.query.date; // 'YYYY-MM-DD' | 'all' | undefined
+        const dateParam = req.query.date;
 
         let driverList = [];
         let reportData = null;
@@ -1983,28 +2429,19 @@ app.get('/api/driver/report/all-expedition', async (req, res) => {
         let pagesScanned = null;
 
         if (dateParam === 'all') {
-            // ── Mode lama: single page manual, tanpa filter tanggal ──
             const page = parseInt(req.query.page) || 1;
             const paginate = parseInt(req.query.paginate) || 10;
-
-            console.log(`🚗 [driver/report/all-expedition] mode=all-pages-off, page=${page}, paginate=${paginate}, phone=${phoneFilter || '-'}`);
-
             reportData = await fetchDriverReportList({ app_uid, paginate, page });
             driverList = reportData?.driver?.data || [];
         } else {
-            // ── Mode default: filter by tanggal (hari ini kalau tidak diisi) ──
             targetDate = dateParam || getJakartaDateString();
             const perPage = parseInt(req.query.paginate) || 50;
-
-            console.log(`🚗 [driver/report/all-expedition] mode=date-filter, date=${targetDate}, phone=${phoneFilter || '-'}`);
-
             const scanResult = await fetchAllDriverOrdersForDate({ app_uid, targetDate, perPage });
             driverList = scanResult.items;
             reportData = scanResult.appMeta;
             pagesScanned = scanResult.pagesScanned;
         }
 
-        // Ambil detail tiap order secara batch (biar tidak membanjiri API jagel)
         const batches = chunk(driverList, BATCH_SIZE);
         const enrichedResults = [];
 
@@ -2021,11 +2458,8 @@ app.get('/api/driver/report/all-expedition', async (req, res) => {
             enrichedResults.push(...batchResults);
         }
 
-        // ── TIDAK ada filter expedition di sini ──
-        // Langsung ambil semua yang berhasil di-fetch detail-nya.
         let filtered = enrichedResults.filter(r => r.ok);
 
-        // Filter tambahan by phone (kalau diminta frontend) — tetap dipertahankan
         if (phoneFilter) {
             filtered = filtered.filter(r => {
                 const phone = extractDriverPhone(r.detail);
@@ -2042,8 +2476,8 @@ app.get('/api/driver/report/all-expedition', async (req, res) => {
                 unique_id: r.item.unique_id,
                 total_price: r.item.total_price,
                 currency: r.item.currency,
-                expedition: extractExpedition(r.detail), // tetap ditampilkan, hanya tidak dipakai untuk filter
-                courrier_type: r.detail?.courrier_type ?? null,   // ← BARU: dipakai untuk cocokkan ke /api/master/courier
+                expedition: extractExpedition(r.detail),
+                courrier_type: r.detail?.courrier_type ?? null,
                 driver_phone: extractDriverPhone(r.detail),
                 driver_info: extractDriverInfo(r.detail),
                 distance_meters: distanceInfo.distance_meters,
@@ -2058,11 +2492,9 @@ app.get('/api/driver/report/all-expedition', async (req, res) => {
         });
 
         const failedCount = enrichedResults.filter(r => !r.ok).length;
-
         const totalOrderValue = data.reduce((sum, d) => sum + (d.total_price || 0), 0);
         const totalDistanceKm = data.reduce((sum, d) => sum + (d.distance_km || 0), 0);
 
-        // ── Ringkasan per driver (sama seperti endpoint asli) ──
         const summaryMap = {};
         data.forEach(d => {
             const key = d.driver_username || d.driver_phone || 'unknown';
@@ -2087,9 +2519,6 @@ app.get('/api/driver/report/all-expedition', async (req, res) => {
             total_distance_km: Math.round(s.total_distance_km * 100) / 100,
         }));
 
-        // ── Bonus: ringkasan jumlah order per jenis expedition ──
-        // Berguna untuk melihat sebaran expedition apa saja yang muncul
-        // (karena endpoint ini tidak lagi difilter ke satu jenis expedition).
         const expeditionBreakdown = {};
         data.forEach(d => {
             const key = d.expedition || 'unknown';
@@ -2104,10 +2533,10 @@ app.get('/api/driver/report/all-expedition', async (req, res) => {
             revenue: reportData?.revenue || null,
             currency: reportData?.currency || 'Rp',
             filter: {
-                date: targetDate,               // null jika mode date=all
-                pages_scanned: pagesScanned,    // null jika mode date=all
+                date: targetDate,
+                pages_scanned: pagesScanned,
                 phone: phoneFilter,
-                expedition_filter: null,        // sengaja null -> menandakan tanpa filter expedition
+                expedition_filter: null,
             },
             total_raw: driverList.length,
             total_filtered: data.length,
@@ -2125,171 +2554,47 @@ app.get('/api/driver/report/all-expedition', async (req, res) => {
     }
 });
 
-
-async function fetchCourierIconAll(unique_id) {
-    const url = 'https://app.jagel.id/api/myapp/courierIcon/all';
-
-    console.log('🌐 Fetch courier master (GET):', url, { unique_id });
-
-    const response = await axios.get(url, {
-        headers: jagelHeaders,
-        params: { unique_id },
-    });
-
-    if (!response.data || !response.data.success) {
-        throw new Error(response.data?.message || 'CourierIcon API error');
-    }
-
-    return response.data.data;
-}
-
-app.get('/api/master/courier', async (req, res) => {
+app.get('/api/driver/order-route/:uniqueId', async (req, res) => {
     try {
-        const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
-        const forceRefresh = req.query.refresh === '1';
+        const { uniqueId } = req.params;
 
-        const cached = courierMasterCache[unique_id];
-        const isCacheValid = cached && (Date.now() - cached.cachedAt) < COURIER_MASTER_CACHE_TTL_MS;
+        console.log(`🗺️ [driver/order-route] unique_id=${uniqueId}`);
 
-        let rawData;
-
-        if (isCacheValid && !forceRefresh) {
-            console.log(`⚡ [master/courier] Pakai cache untuk unique_id=${unique_id}`);
-            rawData = cached.data;
-        } else {
-            rawData = await fetchCourierIconAll(unique_id);
-            courierMasterCache[unique_id] = { data: rawData, cachedAt: Date.now() };
-            console.log(`✅ [master/courier] Cache diperbarui untuk unique_id=${unique_id} (${rawData.length} jenis kurir)`);
-        }
-
-        // Bersihkan entri "=================" (placeholder/separator yang sengaja
-        // dikosongkan di data master jagel, courrier_type 20 & 23 pada contoh)
-        const data = rawData
-            .filter(c => c.name && !/^=+$/.test(c.name.trim()))
-            .map(c => ({
-                courrier_type: c.courrier_type,
-                name: c.name,
-                operator: c.operator,
-                commission: c.commission,
-                avoid_tolls: c.avoid_tolls === 1,
-                icon: c.icon,
-                icon_url: c.icon ? `${JAGEL_ASSET_BASE}/${c.icon}` : null,
-            }));
+        const detail = await fetchDriverOrderDetail(uniqueId);
 
         res.json({
             success: true,
-            unique_id,
-            cached: isCacheValid && !forceRefresh,
-            total: data.length,
-            data,
+            data: detail,
         });
 
     } catch (err) {
-        console.error('❌ [master/courier]', err.message);
-        res.status(500).json({ success: false, error: err.message });
+        console.error('❌ [driver/order-route]', err.message);
+        res.status(502).json({ success: false, error: err.message });
     }
 });
 
-async function fetchCourierIconAll(unique_id) {
-    const url = 'https://app.jagel.id/api/myapp/courierIcon/all';
-
-    console.log('🌐 Fetch courier master (GET):', url, { unique_id });
-
-    const response = await axios.get(url, {
-        headers: jagelHeaders,
-        params: { unique_id },
-    });
-
-    if (!response.data || !response.data.success) {
-        throw new Error(response.data?.message || 'CourierIcon API error');
-    }
-
-    return response.data.data;
-}
-
-
-app.get('/api/master/courier', async (req, res) => {
-    try {
-        const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
-        const forceRefresh = req.query.refresh === '1';
-
-        const cached = courierMasterCache[unique_id];
-        const isCacheValid = cached && (Date.now() - cached.cachedAt) < COURIER_MASTER_CACHE_TTL_MS;
-
-        let rawData;
-
-        if (isCacheValid && !forceRefresh) {
-            console.log(`⚡ [master/courier] Pakai cache untuk unique_id=${unique_id}`);
-            rawData = cached.data;
-        } else {
-            rawData = await fetchCourierIconAll(unique_id);
-            courierMasterCache[unique_id] = { data: rawData, cachedAt: Date.now() };
-            console.log(`✅ [master/courier] Cache diperbarui untuk unique_id=${unique_id} (${rawData.length} jenis kurir)`);
-        }
-
-        // Bersihkan entri "=================" (placeholder/separator yang sengaja
-        // dikosongkan di data master jagel, courrier_type 20 & 23 pada contoh)
-        const data = rawData
-            .filter(c => c.name && !/^=+$/.test(c.name.trim()))
-            .map(c => ({
-                courrier_type: c.courrier_type,
-                name: c.name,
-                operator: c.operator,
-                commission: c.commission,
-                avoid_tolls: c.avoid_tolls === 1,
-                icon: c.icon,
-                icon_url: c.icon ? `${JAGEL_ASSET_BASE}/${c.icon}` : null,
-            }));
-
-        res.json({
-            success: true,
-            unique_id,
-            cached: isCacheValid && !forceRefresh,
-            total: data.length,
-            data,
-        });
-
-    } catch (err) {
-        console.error('❌ [master/courier]', err.message);
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
-
-// ═══════════════════════════════════════════════════════════════
-// ENDPOINT: AMBIL DATA TIPS DARI CUSTOMER KE DRIVER
-// ═══════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────
+// ENDPOINTS - TIPS & COMMISSION
+// ─────────────────────────────────────────────────────────────
 app.get('/api/driver/tips', async (req, res) => {
     try {
         const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
-        const driverUsername = req.query.driver_username || null; // optional filter
+        const driverUsername = req.query.driver_username || null;
 
         console.log(`💰 [driver/tips] unique_id=${unique_id}, driver=${driverUsername || 'semua'}`);
 
-        // ── Ambil semua halaman tanpa paginate ──
         const allTransactions = await fetchAllBalanceTransactions(unique_id);
-
-        // ── Filter category 14 (Tips) ──
         const tipsTransactions = allTransactions.filter(t => t.category === 14);
-
-        // ── Grouping berdasarkan order_no ──
-        // Setiap tips biasanya berpasangan (+ untuk customer, - untuk driver)
-        // Kita ambil yang amount positif (tips dari customer)
         const tipsReceived = tipsTransactions
             .filter(t => t.amount > 0)
-            .map(t => ({
-                ...t,
-                amount: Math.abs(t.amount),
-            }));
+            .map(t => ({ ...t, amount: Math.abs(t.amount) }));
 
-        // ── Filter by driver username (jika ada) ──
         const filteredTips = driverUsername
             ? tipsReceived.filter(t => t.username === driverUsername)
             : tipsReceived;
 
-        // ── Hitung total tips ──
         const totalTips = filteredTips.reduce((sum, t) => sum + t.amount, 0);
 
-        // ── Group by order_no ──
         const tipsByOrder = {};
         filteredTips.forEach(t => {
             const key = t.order_no || 'unknown';
@@ -2308,7 +2613,6 @@ app.get('/api/driver/tips', async (req, res) => {
         const tipsByOrderArray = Object.values(tipsByOrder)
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-        // ── Ringkasan per driver ──
         const summaryByDriver = {};
         filteredTips.forEach(t => {
             const key = t.username || 'unknown';
@@ -2332,10 +2636,7 @@ app.get('/api/driver/tips', async (req, res) => {
         res.json({
             success: true,
             unique_id,
-            filter: {
-                driver_username: driverUsername,
-                category: 14,
-            },
+            filter: { driver_username: driverUsername, category: 14 },
             summary: {
                 total_transactions: filteredTips.length,
                 total_tips: totalTips,
@@ -2353,44 +2654,25 @@ app.get('/api/driver/tips', async (req, res) => {
     }
 });
 
-// ═══════════════════════════════════════════════════════════════
-// ENDPOINT: KOMISI DRIVER (category 1) — data ASLI dari jagel,
-// bukan estimasi shipping × persen komisi.
-// Pola sama seperti /api/driver/tips, cuma category-nya beda.
-// ═══════════════════════════════════════════════════════════════
 app.get('/api/driver/commission', async (req, res) => {
     try {
         const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
-        const driverUsername = req.query.driver_username || null; // optional filter
+        const driverUsername = req.query.driver_username || null;
 
         console.log(`💸 [driver/commission] unique_id=${unique_id}, driver=${driverUsername || 'semua'}`);
 
-        // ── Ambil semua halaman (fetchAllBalanceTransactions sudah looping
-        //    berdasarkan last_page dari response, jadi otomatis sampai
-        //    halaman terakhir walau per_page dari server selalu 10) ──
         const allTransactions = await fetchAllBalanceTransactions(unique_id);
-
-        // ── Filter category 1 (Komisi Driver) ──
         const commissionTransactions = allTransactions.filter(t => t.category === 1);
-
-        // ── Entri milik driver sendiri selalu amount NEGATIF
-        //    (uang keluar dari saldo driver ke platform / appaycenter) ──
         const commissionDeducted = commissionTransactions
             .filter(t => t.amount < 0)
-            .map(t => ({
-                ...t,
-                amount: Math.abs(t.amount),
-            }));
+            .map(t => ({ ...t, amount: Math.abs(t.amount) }));
 
-        // ── Filter by driver username (jika ada) ──
         const filteredCommission = driverUsername
             ? commissionDeducted.filter(t => t.username === driverUsername)
             : commissionDeducted;
 
-        // ── Hitung total komisi ──
         const totalCommission = filteredCommission.reduce((sum, t) => sum + t.amount, 0);
 
-        // ── Group by order_no ──
         const commissionByOrder = {};
         filteredCommission.forEach(t => {
             const key = t.order_no || 'unknown';
@@ -2409,7 +2691,6 @@ app.get('/api/driver/commission', async (req, res) => {
         const commissionByOrderArray = Object.values(commissionByOrder)
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-        // ── Ringkasan per driver ──
         const summaryByDriver = {};
         filteredCommission.forEach(t => {
             const key = t.username || 'unknown';
@@ -2433,10 +2714,7 @@ app.get('/api/driver/commission', async (req, res) => {
         res.json({
             success: true,
             unique_id,
-            filter: {
-                driver_username: driverUsername,
-                category: 1,
-            },
+            filter: { driver_username: driverUsername, category: 1 },
             summary: {
                 total_transactions: filteredCommission.length,
                 total_commission: totalCommission,
@@ -2453,148 +2731,7 @@ app.get('/api/driver/commission', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
-// ═══════════════════════════════════════════════════════════════
-// FUNGSI: AMBIL SEMUA TRANSAKSI BALANCE (TANPA PAGINATE)
-// ═══════════════════════════════════════════════════════════════
-async function fetchAllBalanceTransactions(unique_id) {
-    const url = 'https://app.jagel.id/api/myapp/balance-report-transaction';
-    const allData = [];
-    let currentPage = 1;
-    let lastPage = null;
 
-    console.log(`🌐 Fetch balance transactions (page 1...)`);
-
-    try {
-        while (true) {
-            const response = await axios.post(
-                url,
-                {
-                    unique_id: unique_id,
-                    paginate: 100, // ambil banyak per halaman untuk mengurangi request
-                    page: currentPage,
-                },
-                {
-                    headers: jagelHeaders,
-                }
-            );
-
-            if (!response.data || !response.data.success) {
-                throw new Error(response.data?.message || 'Balance API error');
-            }
-
-            const pageData = response.data.data;
-            const items = pageData.data || [];
-
-            if (items.length === 0) {
-                break;
-            }
-
-            allData.push(...items);
-
-            // Cek apakah ini halaman terakhir
-            lastPage = pageData.last_page || 0;
-            if (currentPage >= lastPage) {
-                break;
-            }
-
-            currentPage++;
-
-            // Optional: delay kecil agar tidak terlalu spam
-            await new Promise(resolve => setTimeout(resolve, 100));
-        }
-
-        console.log(`✅ Total ${allData.length} transaksi balance diambil dari ${currentPage} halaman`);
-        return allData;
-
-    } catch (err) {
-        console.error('❌ Gagal fetch balance transactions:', err.message);
-        throw err;
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ATAU VERSI DENGAN PAGINATE DINAMIS (PILIHAN)
-// ═══════════════════════════════════════════════════════════════
-async function fetchAllBalanceTransactionsWithDynamicPage(unique_id) {
-    const url = 'https://app.jagel.id/api/myapp/balance-report-transaction';
-    const allData = [];
-    let currentPage = 1;
-    let lastPage = null;
-    const perPage = 100; // maksimal per halaman
-
-    console.log(`🌐 Fetch balance transactions (dynamic pagination)...`);
-
-    try {
-        // Ambil halaman pertama untuk mengetahui total halaman
-        const firstResponse = await axios.post(
-            url,
-            {
-                unique_id: unique_id,
-                paginate: perPage,
-                page: 1,
-            },
-            {
-                headers: jagelHeaders,
-            }
-        );
-
-        if (!firstResponse.data || !firstResponse.data.success) {
-            throw new Error(firstResponse.data?.message || 'Balance API error');
-        }
-
-        const firstPageData = firstResponse.data.data;
-        const items = firstPageData.data || [];
-        allData.push(...items);
-
-        lastPage = firstPageData.last_page || 1;
-
-        console.log(`📄 Total halaman: ${lastPage}, total item: ${firstPageData.total || 0}`);
-
-        // Ambil halaman berikutnya secara paralel (dengan batas)
-        if (lastPage > 1) {
-            const pagePromises = [];
-            for (let page = 2; page <= lastPage; page++) {
-                pagePromises.push(
-                    axios.post(
-                        url,
-                        {
-                            unique_id: unique_id,
-                            paginate: perPage,
-                            page: page,
-                        },
-                        {
-                            headers: jagelHeaders,
-                        }
-                    ).then(res => res.data)
-                );
-            }
-
-            // Eksekusi paralel dengan batasan
-            const batchSize = 10; // maksimal 10 request paralel
-            for (let i = 0; i < pagePromises.length; i += batchSize) {
-                const batch = pagePromises.slice(i, i + batchSize);
-                const results = await Promise.all(batch);
-                results.forEach(result => {
-                    if (result.success && result.data?.data) {
-                        allData.push(...result.data.data);
-                    }
-                });
-                console.log(`📄 Halaman ${i + 2} - ${Math.min(i + batchSize, pagePromises.length) + 1} selesai`);
-            }
-        }
-
-        console.log(`✅ Total ${allData.length} transaksi balance diambil dari ${lastPage} halaman`);
-        return allData;
-
-    } catch (err) {
-        console.error('❌ Gagal fetch balance transactions:', err.message);
-        throw err;
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════
-// ENDPOINT: TIPS + INTEGRASI DENGAN ORDER DETAIL
-// ═══════════════════════════════════════════════════════════════
 app.get('/api/driver/tips-with-orders', async (req, res) => {
     try {
         const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
@@ -2604,14 +2741,10 @@ app.get('/api/driver/tips-with-orders', async (req, res) => {
 
         console.log(`💰 [driver/tips-with-orders] unique_id=${unique_id}`);
 
-        // ── Ambil semua transaksi balance ──
         const allTransactions = await fetchAllBalanceTransactions(unique_id);
-
-        // ── Filter category 14 (Tips) ──
         const tipsTransactions = allTransactions
             .filter(t => t.category === 14 && t.amount > 0);
 
-        // ── Ambil detail order untuk setiap tips ──
         const tipsWithOrderDetail = await Promise.all(
             tipsTransactions.map(async (tip) => {
                 try {
@@ -2619,7 +2752,6 @@ app.get('/api/driver/tips-with-orders', async (req, res) => {
                         return { ...tip, order_detail: null };
                     }
 
-                    // Cari order detail berdasarkan order_no
                     const orderDetail = await fetchOrderDetailByOrderNo(tip.order_no);
                     return { ...tip, order_detail: orderDetail };
                 } catch (err) {
@@ -2629,7 +2761,6 @@ app.get('/api/driver/tips-with-orders', async (req, res) => {
             })
         );
 
-        // ── Filter by driver phone jika ada ──
         let filtered = tipsWithOrderDetail;
         if (driverPhone) {
             filtered = filtered.filter(t => {
@@ -2638,7 +2769,6 @@ app.get('/api/driver/tips-with-orders', async (req, res) => {
             });
         }
 
-        // ── Filter by date jika ada ──
         if (dateFrom) {
             filtered = filtered.filter(t => t.creation_date >= dateFrom);
         }
@@ -2646,10 +2776,8 @@ app.get('/api/driver/tips-with-orders', async (req, res) => {
             filtered = filtered.filter(t => t.creation_date <= dateTo);
         }
 
-        // ── Hitung total tips ──
         const totalTips = filtered.reduce((sum, t) => sum + t.amount, 0);
 
-        // ── Group by order_no ──
         const tipsByOrder = {};
         filtered.forEach(t => {
             const key = t.order_no || 'unknown';
@@ -2669,17 +2797,16 @@ app.get('/api/driver/tips-with-orders', async (req, res) => {
         const tipsByOrderArray = Object.values(tipsByOrder)
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-        // ── Ringkasan per driver ──
         const summaryByDriver = {};
         filtered.forEach(t => {
             const driverName = t.order_detail?.driver?.name || t.order_detail?.driver_name || t.username || 'unknown';
-            const driverPhone = t.order_detail?.driver?.phone || t.order_detail?.driver_phone || '';
-            const key = driverPhone || driverName;
+            const driverPhoneVal = t.order_detail?.driver?.phone || t.order_detail?.driver_phone || '';
+            const key = driverPhoneVal || driverName;
 
             if (!summaryByDriver[key]) {
                 summaryByDriver[key] = {
                     driver_name: driverName,
-                    driver_phone: driverPhone,
+                    driver_phone: driverPhoneVal,
                     total_tips: 0,
                     total_orders: 0,
                     orders: new Set(),
@@ -2719,74 +2846,542 @@ app.get('/api/driver/tips-with-orders', async (req, res) => {
     }
 });
 
-// ═══════════════════════════════════════════════════════════════
-// ENDPOINT: GET DETAIL ORDER (untuk tampilan "Detail Rute Order"
-// di frontend laporan-driver.html)
-//
-// Reuse fetchDriverOrderDetail() yang sudah ada & terbukti jalan
-// (dipakai juga di /api/driver/report dan /api/driver/report/all-expedition).
-// Taruh route ini di dekat endpoint driver lain, SETELAH fungsi
-// fetchDriverOrderDetail(uniqueId) didefinisikan.
-// ═══════════════════════════════════════════════════════════════
-app.get('/api/driver/order-route/:uniqueId', async (req, res) => {
+// ─────────────────────────────────────────────────────────────
+// ENDPOINTS - MASTER COURIER
+// ─────────────────────────────────────────────────────────────
+app.get('/api/master/courier', async (req, res) => {
     try {
-        const { uniqueId } = req.params;
+        const unique_id = req.query.unique_id || DEFAULT_UNIQUE_ID;
+        const forceRefresh = req.query.refresh === '1';
 
-        console.log(`🗺️ [driver/order-route] unique_id=${uniqueId}`);
+        const cached = courierMasterCache[unique_id];
+        const isCacheValid = cached && (Date.now() - cached.cachedAt) < COURIER_MASTER_CACHE_TTL_MS;
 
-        const detail = await fetchDriverOrderDetail(uniqueId);
+        let rawData;
+
+        if (isCacheValid && !forceRefresh) {
+            console.log(`⚡ [master/courier] Pakai cache untuk unique_id=${unique_id}`);
+            rawData = cached.data;
+        } else {
+            rawData = await fetchCourierIconAll(unique_id);
+            courierMasterCache[unique_id] = { data: rawData, cachedAt: Date.now() };
+            console.log(`✅ [master/courier] Cache diperbarui untuk unique_id=${unique_id} (${rawData.length} jenis kurir)`);
+        }
+
+        const data = rawData
+            .filter(c => c.name && !/^=+$/.test(c.name.trim()))
+            .map(c => ({
+                courrier_type: c.courrier_type,
+                name: c.name,
+                operator: c.operator,
+                commission: c.commission,
+                avoid_tolls: c.avoid_tolls === 1,
+                icon: c.icon,
+                icon_url: c.icon ? `${JAGEL_ASSET_BASE}/${c.icon}` : null,
+            }));
 
         res.json({
             success: true,
-            data: detail, // berisi order_no, lines[] (origin/destination/distance), dll
+            unique_id,
+            cached: isCacheValid && !forceRefresh,
+            total: data.length,
+            data,
         });
 
     } catch (err) {
-        console.error('❌ [driver/order-route]', err.message);
-        res.status(502).json({ success: false, error: err.message });
+        console.error('❌ [master/courier]', err.message);
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
+// ─────────────────────────────────────────────────────────────
+// ENDPOINTS - BONUS BBM
+// ─────────────────────────────────────────────────────────────
+app.post('/api/driver/bonus/auto-insert', async (req, res) => {
+    console.log('═'.repeat(60));
+    console.log('📦 [AUTO-INSERT] Request received from frontend');
+    console.log('═'.repeat(60));
 
-// ═══════════════════════════════════════════════════════════════
-// BONUS (opsional): PERBAIKAN fetchOrderDetailByOrderNo
-//
-// Fungsi versi lama di bagian bawah file Anda punya 2 bug:
-//   1. Memakai `API_BASE` yang TIDAK PERNAH didefinisikan di file
-//      backend ini (cuma ada di file HTML front-end) -> akan
-//      throw ReferenceError kalau benar-benar dipanggil.
-//   2. Endpoint /api/driver/report/all-expedition TIDAK membaca
-//      query param `order_no` sama sekali (cek definisinya —
-//      cuma baca app_uid, phone, date, page, paginate). Jadi
-//      filter `?order_no=${orderNo}` itu diam-diam tidak ngefek,
-//      dan `json.data[0]` yang dikembalikan bisa jadi order yang
-//      SALAH (order pertama di hasil list, bukan yang dicari).
-//
-// Fungsi ini dipakai di /api/driver/tips-with-orders — kalau
-// endpoint itu Anda pakai, sebaiknya diganti dengan versi ini:
-// ═══════════════════════════════════════════════════════════════
-async function fetchOrderDetailByOrderNo(orderNo, { maxDaysBack = 7 } = {}) {
     try {
-        // all-expedition tidak support filter order_no di server, jadi kita
-        // scan per-tanggal (dari hari ini mundur beberapa hari) dan cari
-        // order_no yang cocok secara manual.
-        for (let dayOffset = 0; dayOffset <= maxDaysBack; dayOffset++) {
-            const targetDate = getJakartaDateString(-dayOffset);
-            const scanResult = await fetchAllDriverOrdersForDate({ targetDate });
-            const found = scanResult.items.find(item => item.order_no === orderNo);
+        const { orders } = req.body;
 
-            if (found) {
-                const detail = await fetchDriverOrderDetail(found.unique_id);
-                return { ...found, ...detail };
+        if (!orders || !Array.isArray(orders) || orders.length === 0) {
+            console.log('❌ [AUTO-INSERT] No orders provided');
+            return res.status(400).json({
+                success: false,
+                message: 'orders array is required'
+            });
+        }
+
+        console.log(`📋 [AUTO-INSERT] Processing ${orders.length} orders`);
+
+        let processed = 0;
+        let skipped = 0;
+        let errors = 0;
+        const results = [];
+
+        for (const order of orders) {
+            const orderNo = order.order_no;
+            const username = order.driver_username;
+            const distance = parseFloat(order.distance_km) || 0;
+            const isFood = order.expedition &&
+                order.expedition.toLowerCase().includes('kurir food');
+
+            console.log(`🔄 [AUTO-INSERT] Processing order: ${orderNo}`);
+
+            if (!isFood) {
+                console.log(`⏭️ [AUTO-INSERT] ${orderNo} not food order`);
+                skipped++;
+                results.push({
+                    order_no: orderNo,
+                    status: 'skipped',
+                    message: 'Not a food order'
+                });
+                continue;
+            }
+
+            if (distance < 3) {
+                console.log(`⏭️ [AUTO-INSERT] ${orderNo} distance ${distance}km < 3km`);
+                skipped++;
+                results.push({
+                    order_no: orderNo,
+                    status: 'skipped',
+                    message: `Distance ${distance}km < 3km`
+                });
+                continue;
+            }
+
+            const hasBonus = await bonusModel.hasOrderBonus(orderNo, username);
+            if (hasBonus) {
+                console.log(`⏭️ [AUTO-INSERT] ${orderNo} already has bonus`);
+                skipped++;
+                results.push({
+                    order_no: orderNo,
+                    status: 'skipped',
+                    message: 'Already has bonus'
+                });
+                continue;
+            }
+
+            try {
+                console.log(`✅ [AUTO-INSERT] Creating bonus for ${orderNo}`);
+                const bonusResult = await bonusModel.processAutoBonus({
+                    driver_username: username,
+                    driver_phone: order.driver_phone || '081257314693',
+                    order_no: orderNo,
+                    distance_km: distance,
+                    creation_date: order.creation_date || new Date().toISOString(),
+                    total_price: parseFloat(order.total_price) || 0,
+                    unique_id: order.unique_id || null,
+                });
+
+                if (bonusResult.success && bonusResult.new_bonuses && bonusResult.new_bonuses.length > 0) {
+                    processed++;
+                    results.push({
+                        order_no: orderNo,
+                        status: 'success',
+                        bonus: bonusResult.new_bonuses
+                    });
+                    console.log(`✅ [AUTO-INSERT] Bonus created for ${orderNo}`);
+                } else {
+                    skipped++;
+                    results.push({
+                        order_no: orderNo,
+                        status: 'skipped',
+                        message: bonusResult.message || 'No new bonus created'
+                    });
+                    console.log(`⏭️ [AUTO-INSERT] ${orderNo}: ${bonusResult.message || 'No new bonus'}`);
+                }
+            } catch (err) {
+                errors++;
+                results.push({
+                    order_no: orderNo,
+                    status: 'error',
+                    message: err.message
+                });
+                console.error(`❌ [AUTO-INSERT] Error for ${orderNo}:`, err);
             }
         }
 
-        return null;
-    } catch (err) {
-        console.warn(`⚠️ Gagal ambil detail order ${orderNo}: ${err.message}`);
-        return null;
+        console.log('═'.repeat(60));
+        console.log(`📊 [AUTO-INSERT] Summary: ${processed} created, ${skipped} skipped, ${errors} errors`);
+        console.log('═'.repeat(60));
+
+        res.json({
+            success: true,
+            summary: {
+                total_orders: orders.length,
+                processed: processed,
+                skipped: skipped,
+                errors: errors
+            },
+            results: results
+        });
+
+    } catch (error) {
+        console.error('❌ [AUTO-INSERT] Error:', error);
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Internal server error'
+        });
     }
-}
+});
+
+app.post('/api/driver/order/complete', async (req, res) => {
+    console.log('═'.repeat(60));
+    console.log('📦 [ORDER-COMPLETE] Request received');
+    console.log('═'.repeat(60));
+
+    try {
+        const {
+            order_no,
+            driver_username,
+            driver_phone,
+            distance_km,
+            total_price,
+            unique_id,
+            status = 'completed',
+            order_type,
+            category,
+            expedition
+        } = req.body;
+
+        console.log(`📋 [REQUEST] Order: ${order_no}, Driver: ${driver_username}, Distance: ${distance_km}km`);
+
+        if (!order_no || !driver_username) {
+            return res.status(400).json({
+                success: false,
+                message: 'Order number and driver username are required'
+            });
+        }
+
+        const hasBonus = await bonusModel.hasOrderBonus(order_no, driver_username);
+        console.log(`🔍 [CHECK] Has bonus: ${hasBonus}`);
+
+        const isFoodOrder = category === 3 ||
+            (expedition && expedition.toLowerCase().includes('kurir food')) ||
+            order_type === 'food' ||
+            req.body.use_expedition === 1;
+
+        console.log(`🔍 [CHECK] Is food order: ${isFoodOrder}, Distance > 0: ${distance_km > 0}`);
+
+        let bonusResult = null;
+
+        if (!hasBonus && distance_km > 0 && isFoodOrder) {
+            console.log('✅ [BONUS] Processing auto bonus...');
+            bonusResult = await bonusModel.processAutoBonus({
+                driver_username,
+                driver_phone: driver_phone || '081257314693',
+                order_no,
+                distance_km: parseFloat(distance_km),
+                creation_date: new Date().toISOString(),
+                total_price: parseFloat(total_price) || 0,
+                unique_id: unique_id || null,
+            });
+            console.log(`✅ [BONUS] Result:`, bonusResult);
+        } else {
+            console.log('⏭️ [SKIP] Bonus not processed');
+        }
+
+        console.log('✅ [ORDER-COMPLETE] Done');
+        console.log('═'.repeat(60));
+
+        res.json({
+            success: true,
+            message: 'Order completed successfully',
+            data: {
+                order_no,
+                status,
+                bonus: bonusResult,
+                is_food_order: isFoodOrder,
+                has_existing_bonus: hasBonus
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ [ORDER-COMPLETE] Error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+            error: error.message
+        });
+    }
+});
+
+app.get('/api/driver/bonus/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        const { status, from, to, limit = 10, offset = 0 } = req.query;
+
+        console.log(`📋 [GET-BONUSES] username=${username}`);
+
+        if (!username) {
+            return res.status(400).json({
+                success: false,
+                message: 'Driver username is required'
+            });
+        }
+
+        const result = await bonusModel.getBonusesByDriver(username, {
+            status: status || undefined,
+            from: from || undefined,
+            to: to || undefined,
+            limit: parseInt(limit, 10),
+            offset: parseInt(offset, 10),
+        });
+
+        res.json({
+            success: true,
+            data: result.items,
+            pagination: {
+                total: result.total,
+                limit: result.limit,
+                offset: result.offset,
+            }
+        });
+    } catch (error) {
+        console.error('❌ Get bonuses error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error'
+        });
+    }
+});
+
+app.get('/api/driver/bonus/detail/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        console.log(`🔍 [GET-BONUS-DETAIL] id=${id}`);
+
+        const detail = await bonusModel.getBonusDetail(id);
+
+        if (!detail) {
+            return res.status(404).json({
+                success: false,
+                message: 'Bonus tidak ditemukan'
+            });
+        }
+
+        res.json({
+            success: true,
+            data: detail
+        });
+    } catch (error) {
+        console.error('❌ Get bonus detail error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error'
+        });
+    }
+});
+
+app.post('/api/driver/bonus/create', async (req, res) => {
+    console.log('═'.repeat(60));
+    console.log('📝 [CREATE-BONUS] Request received');
+    console.log('═'.repeat(60));
+
+    try {
+        const {
+            driver_username,
+            driver_phone,
+            order_no,
+            distance_km,
+            creation_date,
+            total_price,
+            unique_id
+        } = req.body;
+
+        console.log(`📋 [CREATE-BONUS] Driver: ${driver_username}, Order: ${order_no}, Distance: ${distance_km}km`);
+
+        if (!driver_username || !order_no || !distance_km) {
+            return res.status(400).json({
+                success: false,
+                message: 'driver_username, order_no, dan distance_km wajib diisi'
+            });
+        }
+
+        const hasBonus = await bonusModel.hasOrderBonus(order_no, driver_username);
+        if (hasBonus) {
+            return res.status(409).json({
+                success: false,
+                message: 'Order ini sudah memiliki bonus'
+            });
+        }
+
+        const result = await bonusModel.processAutoBonus({
+            driver_username,
+            driver_phone: driver_phone || null,
+            order_no,
+            distance_km: parseFloat(distance_km),
+            creation_date: creation_date || new Date().toISOString(),
+            total_price: parseFloat(total_price) || 0,
+            unique_id: unique_id || null,
+        });
+
+        console.log(`✅ [CREATE-BONUS] Result:`, result);
+        console.log('═'.repeat(60));
+
+        res.json(result);
+    } catch (error) {
+        console.error('❌ Create bonus error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error'
+        });
+    }
+});
+
+app.post('/api/driver/bonus/claim/:id', async (req, res) => {
+    console.log('═'.repeat(60));
+    console.log(`💰 [CLAIM-BONUS] Request for ID: ${req.params.id}`);
+    console.log('═'.repeat(60));
+
+    try {
+        const { id } = req.params;
+
+        if (!id) {
+            return res.status(400).json({
+                success: false,
+                message: 'bonus_id is required'
+            });
+        }
+
+        const result = await bonusModel.claimBonus(id);
+
+        console.log(`✅ [CLAIM-BONUS] Success:`, result);
+        console.log('═'.repeat(60));
+
+        res.json({
+            success: true,
+            message: 'Bonus berhasil diklaim',
+            data: result
+        });
+    } catch (error) {
+        console.error('❌ [CLAIM-BONUS] Error:', error);
+        console.log('═'.repeat(60));
+        res.status(400).json({
+            success: false,
+            message: error.message || 'Gagal klaim bonus'
+        });
+    }
+});
+
+app.get('/api/driver/bonus/summary/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        console.log(`📊 [BONUS-SUMMARY] username=${username}`);
+
+        if (!username) {
+            return res.status(400).json({
+                success: false,
+                message: 'Driver username is required'
+            });
+        }
+
+        const status = await bonusModel.getDriverBonusStatus(username);
+
+        res.json({
+            success: true,
+            data: status
+        });
+    } catch (error) {
+        console.error('❌ Get bonus summary error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error'
+        });
+    }
+});
+
+app.post('/api/driver/bonus/process-expired', async (req, res) => {
+    try {
+        console.log(`⏰ [PROCESS-EXPIRED] Starting...`);
+        const result = await bonusModel.markExpiredBonuses();
+        console.log(`✅ [PROCESS-EXPIRED] ${result.expired_count} bonuses expired`);
+        res.json({
+            success: true,
+            ...result
+        });
+    } catch (error) {
+        console.error('❌ Process expired bonus error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Internal server error'
+        });
+    }
+});
+
+app.post('/api/driver/order/retry-bonus', async (req, res) => {
+    console.log('═'.repeat(60));
+    console.log('🔄 [RETRY-BONUS] Request received');
+    console.log('═'.repeat(60));
+
+    try {
+        const { order_no, driver_username, driver_phone, date } = req.body;
+
+        console.log(`📋 [RETRY-BONUS] Order: ${order_no}, Driver: ${driver_username}`);
+
+        if (!order_no || !driver_username) {
+            return res.status(400).json({
+                success: false,
+                message: 'order_no and driver_username are required'
+            });
+        }
+
+        const hasBonus = await bonusModel.hasOrderBonus(order_no, driver_username);
+        if (hasBonus) {
+            console.log(`⏭️ [RETRY-BONUS] Order already has bonus`);
+            return res.status(409).json({
+                success: false,
+                message: 'Order already has bonus'
+            });
+        }
+
+        const targetDate = date || new Date().toISOString().split('T')[0];
+        console.log(`📅 [RETRY-BONUS] Searching orders for date: ${targetDate}`);
+
+        const reportUrl = `http://localhost:${PORT}/api/driver/report/all-expedition?date=${targetDate}&phone=${driver_phone || ''}`;
+        const response = await axios.get(reportUrl);
+        const orderData = response.data?.data?.find(o => o.order_no === order_no);
+
+        if (!orderData) {
+            console.log(`❌ [RETRY-BONUS] Order not found`);
+            return res.status(404).json({
+                success: false,
+                message: 'Order not found in history'
+            });
+        }
+
+        console.log(`✅ [RETRY-BONUS] Order found: ${orderData.distance_km}km`);
+
+        const bonusResult = await bonusModel.processAutoBonus({
+            driver_username: driver_username,
+            driver_phone: driver_phone || orderData.driver_phone || '081257314693',
+            order_no: order_no,
+            distance_km: parseFloat(orderData.distance_km || 0),
+            creation_date: orderData.creation_date || new Date().toISOString(),
+            total_price: parseFloat(orderData.total_price || 0),
+            unique_id: orderData.unique_id || null,
+        });
+
+        console.log(`✅ [RETRY-BONUS] Bonus processed`);
+        console.log('═'.repeat(60));
+
+        res.json({
+            success: true,
+            message: 'Bonus processed successfully',
+            data: bonusResult
+        });
+
+    } catch (error) {
+        console.error('❌ [RETRY-BONUS] Error:', error);
+        console.log('═'.repeat(60));
+        res.status(500).json({
+            success: false,
+            message: error.message || 'Internal server error'
+        });
+    }
+});
 
 // ─────────────────────────────────────────────────────────────
 // START SERVER
@@ -2806,5 +3401,36 @@ app.listen(PORT, () => {
     console.log(`\n🌾 PETANI LOKAL ENDPOINTS:`);
     console.log(`  GET /api/petani/mitra?page=1&per_page=24`);
     console.log(`  GET /api/petani/produk/:mitraUid?page=1&search_list=`);
+    console.log(`\n🥬 PREORDER ENDPOINTS:`);
+    console.log(`  GET /api/preorder/mitra?page=1&per_page=24`);
+    console.log(`  GET /api/preorder/produk/:mitraUid?page=1&search_list=`);
+    console.log(`\n🥭 PANEN HARI INI ENDPOINTS:`);
+    console.log(`  GET /api/panen-hari-ini/mitra?page=1&per_page=24`);
+    console.log(`  GET /api/panen-hari-ini/produk/:mitraUid?page=1&search_list=`);
+    console.log(`\n🌱 JADWAL PANEN ENDPOINTS:`);
+    console.log(`  GET /api/jadwal-panen/mitra?page=1&per_page=24`);
+    console.log(`  GET /api/jadwal-panen/produk/:mitraUid?page=1&search_list=`);
+    console.log(`\n🎟️ DISCOUNT ENDPOINTS:`);
+    console.log(`  GET /api/mydiscount?filter=...&unique_id=...`);
+    console.log(`\n🚗 DRIVER REPORT ENDPOINTS:`);
+    console.log(`  GET /api/driver/report?date=YYYY-MM-DD&phone=...`);
+    console.log(`  GET /api/driver/report/all-expedition?date=YYYY-MM-DD&phone=...`);
+    console.log(`  GET /api/driver/order-route/:uniqueId`);
+    console.log(`\n💰 TIPS & COMMISSION ENDPOINTS:`);
+    console.log(`  GET /api/driver/tips?driver_username=xxx`);
+    console.log(`  GET /api/driver/commission?driver_username=xxx`);
+    console.log(`  GET /api/driver/tips-with-orders?phone=xxx`);
+    console.log(`\n📦 BONUS BBM ENDPOINTS:`);
+    console.log(`  POST /api/driver/bonus/auto-insert - 🔥 AUTO INSERT dari frontend`);
+    console.log(`  POST /api/driver/order/complete - Auto bonus saat order selesai`);
+    console.log(`  GET /api/driver/bonus/:username - Daftar bonus driver`);
+    console.log(`  GET /api/driver/bonus/detail/:id - Detail bonus`);
+    console.log(`  POST /api/driver/bonus/create - Create bonus manual`);
+    console.log(`  POST /api/driver/bonus/claim/:id - Klaim bonus`);
+    console.log(`  GET /api/driver/bonus/summary/:username - Summary bonus`);
+    console.log(`  POST /api/driver/bonus/process-expired - Proses expired`);
+    console.log(`  POST /api/driver/order/retry-bonus - Retry bonus untuk order existing`);
+    console.log(`\n📦 MASTER COURIER:`);
+    console.log(`  GET /api/master/courier?unique_id=xxx`);
     console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 });
