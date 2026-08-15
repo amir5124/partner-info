@@ -18,6 +18,11 @@ const JAGEL_CODENAME = 'iknlinku'; // alias, dipakai fungsi jagelGet
 const BATCH_SIZE = 3;
 const DEFAULT_UNIQUE_ID = '03421121304617f701ba3b374.23310242';
 const DEFAULT_PARTNER_STATUS = '2';
+const BONUS_API = 'https://bonus.siappgo.id';
+const BONUS_COMPLETE_ENDPOINT = '/api/driver/order/complete';
+const ORDER_STATUS_COMPLETED = 4; // sesuaikan kalau ternyata beda
+const triggeredOrderCache = new Set();
+const TRIGGER_CACHE_MAX_SIZE = 5000; 
 
 // Component UID
 const MAKANAN_COMPONENT_UID = '618637dbc8415';    // Jastip Makanan
@@ -132,6 +137,58 @@ async function jagelGet(path, params = {}) {
         throw new Error(json.message || 'Jagel API returned success=false');
     }
     return json.data;
+}
+
+// ─────────────────────────────────────────────────────────────
+// TRIGGER BONUS: kirim order selesai ke Bonus API
+// Fire-and-forget — tidak menghambat response ke frontend.
+// Aman dipanggil berulang untuk order yang sama karena
+// Bonus API sudah cek hasOrderBonus() sebelum insert.
+// ─────────────────────────────────────────────────────────────
+async function triggerBonusForOrder(order) {
+    try {
+        const resp = await axios.post(
+            `${BONUS_API}${BONUS_COMPLETE_ENDPOINT}`,
+            {
+                order_no: order.order_no,
+                driver_username: order.driver_username,
+                driver_phone: order.driver_phone,
+                distance_km: order.distance_km,
+                total_price: order.total_price,
+                unique_id: order.unique_id,
+                order_type: 'food',
+                category: 3,
+                use_expedition: 1,
+            },
+            { timeout: 8000 }
+        );
+        if (resp.data?.data?.bonus?.new_bonuses?.length > 0) {
+            console.log(`🎉 [bonus-trigger] Bonus baru untuk order ${order.order_no}: ${resp.data.data.bonus.new_bonuses.length} block`);
+        }
+    } catch (err) {
+        console.warn(`⚠️ [bonus-trigger] Gagal kirim order ${order.order_no} ke Bonus API: ${err.message}`);
+    }
+}
+
+function triggerBonusForCompletedOrders(orders) {
+    const completed = orders.filter(o =>
+        o.order_status === ORDER_STATUS_COMPLETED &&
+        o.distance_km > 0 &&
+        o.driver_username &&
+        !triggeredOrderCache.has(o.order_no)
+    );
+
+    completed.forEach(o => {
+        triggeredOrderCache.add(o.order_no);
+        triggerBonusForOrder(o);
+    });
+
+    // Cegah Set membengkak tanpa batas kalau server jalan lama
+    if (triggeredOrderCache.size > TRIGGER_CACHE_MAX_SIZE) {
+        const excess = triggeredOrderCache.size - TRIGGER_CACHE_MAX_SIZE;
+        const it = triggeredOrderCache.values();
+        for (let i = 0; i < excess; i++) triggeredOrderCache.delete(it.next().value);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2095,6 +2152,8 @@ app.get('/api/driver/report/all-expedition', async (req, res) => {
             const key = d.expedition || 'unknown';
             expeditionBreakdown[key] = (expeditionBreakdown[key] || 0) + 1;
         });
+
+        triggerBonusForCompletedOrders(data);
 
         res.json({
             success: true,
