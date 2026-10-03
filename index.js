@@ -36,6 +36,8 @@ const DRIVER_EXPEDITION_FILTER = 'kurir - kurir food';
 const COURIER_MASTER_CACHE_TTL_MS = 60 * 60 * 1000; // 1 jam
 const JAGEL_ASSET_BASE = 'https://app.jagel.id/storage';
 let courierMasterCache = {}; // { [unique_id]: { data, cachedAt } }
+const BONUS_ELIGIBLE_COURIER_TYPES = [11];
+
 
 
 // Default koordinat
@@ -53,6 +55,10 @@ const jagelHeaders = {
 // ─────────────────────────────────────────────────────────────
 // UTILITAS
 // ─────────────────────────────────────────────────────────────
+function isBonusEligibleCourier(courrierType) {
+    return BONUS_ELIGIBLE_COURIER_TYPES.includes(Number(courrierType));
+}
+
 
 function getDistance(lat1, lon1, lat2, lon2) {
     const R = 6371;
@@ -157,6 +163,7 @@ async function triggerBonusForOrder(order) {
                 distance_km: order.distance_km,
                 total_price: order.total_price,
                 unique_id: order.unique_id,
+                courrier_type: order.courrier_type,   // ← BARU
                 order_type: 'food',
                 category: 3,
                 use_expedition: 1,
@@ -176,6 +183,7 @@ function triggerBonusForCompletedOrders(orders) {
         o.order_status === ORDER_STATUS_COMPLETED &&
         o.distance_km > 0 &&
         o.driver_username &&
+        isBonusEligibleCourier(o.courrier_type) &&   // ← BARU
         !triggeredOrderCache.has(o.order_no)
     );
 
