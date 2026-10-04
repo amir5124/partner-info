@@ -38,6 +38,21 @@ const JAGEL_ASSET_BASE = 'https://app.jagel.id/storage';
 let courierMasterCache = {}; // { [unique_id]: { data, cachedAt } }
 const BONUS_ELIGIBLE_COURIER_TYPES = [11];
 
+function isBonusEligibleCourier(courrierType) {
+    // strict: undefined/null/NaN -> false (order tanpa courrier_type ditolak)
+    return BONUS_ELIGIBLE_COURIER_TYPES.includes(Number(courrierType));
+}
+
+// Supaya log "skip" tidak berulang untuk order yang sama setiap kali
+// endpoint laporan dibuka.
+const skipLoggedOrderCache = new Set();
+
+function trimSet(set, maxSize) {
+    if (set.size <= maxSize) return;
+    const excess = set.size - maxSize;
+    const it = set.values();
+    for (let i = 0; i < excess; i++) set.delete(it.next().value);
+}
 
 
 // Default koordinat
@@ -55,10 +70,6 @@ const jagelHeaders = {
 // ─────────────────────────────────────────────────────────────
 // UTILITAS
 // ─────────────────────────────────────────────────────────────
-function isBonusEligibleCourier(courrierType) {
-    return BONUS_ELIGIBLE_COURIER_TYPES.includes(Number(courrierType));
-}
-
 
 function getDistance(lat1, lon1, lat2, lon2) {
     const R = 6371;
@@ -163,15 +174,22 @@ async function triggerBonusForOrder(order) {
                 distance_km: order.distance_km,
                 total_price: order.total_price,
                 unique_id: order.unique_id,
-                courrier_type: order.courrier_type,   // ← BARU
+                creation_date: order.creation_date,   // waktu order asli dari Jagel
+                courrier_type: order.courrier_type,   // ← BARU: dipakai Bonus API untuk filter
                 order_type: 'food',
                 category: 3,
                 use_expedition: 1,
             },
             { timeout: 8000 }
         );
-        if (resp.data?.data?.bonus?.new_bonuses?.length > 0) {
-            console.log(`🎉 [bonus-trigger] Bonus baru untuk order ${order.order_no}: ${resp.data.data.bonus.new_bonuses.length} block`);
+
+        const bonus = resp.data?.data?.bonus;
+        const newCount = bonus?.new_bonuses?.length || 0;
+
+        if (newCount > 0) {
+            console.log(`🎉 [bonus-trigger] Bonus baru untuk order ${order.order_no}: ${newCount} block`);
+        } else {
+            console.log(`📨 [bonus-trigger] Order ${order.order_no} (courrier_type=${order.courrier_type}) diproses Bonus API, tidak ada bonus baru`);
         }
     } catch (err) {
         console.warn(`⚠️ [bonus-trigger] Gagal kirim order ${order.order_no} ke Bonus API: ${err.message}`);
@@ -179,25 +197,44 @@ async function triggerBonusForOrder(order) {
 }
 
 function triggerBonusForCompletedOrders(orders) {
-    const completed = orders.filter(o =>
-        o.order_status === ORDER_STATUS_COMPLETED &&
-        o.distance_km > 0 &&
-        o.driver_username &&
-        isBonusEligibleCourier(o.courrier_type) &&   // ← BARU
-        !triggeredOrderCache.has(o.order_no)
-    );
+    const eligible = [];
+    let skippedCourier = 0;
 
-    completed.forEach(o => {
+    orders.forEach(o => {
+        // Syarat dasar: order selesai, ada jarak, ada driver, belum pernah dikirim
+        const baseOk =
+            o.order_status === ORDER_STATUS_COMPLETED &&
+            o.distance_km > 0 &&
+            o.driver_username &&
+            !triggeredOrderCache.has(o.order_no);
+
+        if (!baseOk) return;
+
+        // Syarat bonus: hanya Kurir Food (courrier_type 11)
+        if (!isBonusEligibleCourier(o.courrier_type)) {
+            skippedCourier++;
+            if (!skipLoggedOrderCache.has(o.order_no)) {
+                skipLoggedOrderCache.add(o.order_no);
+                console.log(`⏭️ [bonus-trigger] Skip order ${o.order_no}: courrier_type=${o.courrier_type ?? 'N/A'} bukan Kurir Food`);
+            }
+            return;
+        }
+
+        eligible.push(o);
+    });
+
+    if (eligible.length > 0 || skippedCourier > 0) {
+        console.log(`📤 [bonus-trigger] Kirim ${eligible.length} order ke Bonus API, skip ${skippedCourier} (bukan Kurir Food)`);
+    }
+
+    eligible.forEach(o => {
         triggeredOrderCache.add(o.order_no);
         triggerBonusForOrder(o);
     });
 
     // Cegah Set membengkak tanpa batas kalau server jalan lama
-    if (triggeredOrderCache.size > TRIGGER_CACHE_MAX_SIZE) {
-        const excess = triggeredOrderCache.size - TRIGGER_CACHE_MAX_SIZE;
-        const it = triggeredOrderCache.values();
-        for (let i = 0; i < excess; i++) triggeredOrderCache.delete(it.next().value);
-    }
+    trimSet(triggeredOrderCache, TRIGGER_CACHE_MAX_SIZE);
+    trimSet(skipLoggedOrderCache, TRIGGER_CACHE_MAX_SIZE);
 }
 
 // ─────────────────────────────────────────────────────────────
